@@ -153,8 +153,9 @@ class FleetImporter(Processor):
         },
         # Pathing inside repo
         "team_yaml_path": {
-            "required": True,
-            "description": "Path to the team YAML (e.g., 'teams/workstations.yml').",
+            "required": False,
+            "default": "",
+            "description": "(Deprecated) Path to the team YAML. Team YAML is no longer automatically updated.",
         },
         "software_dir": {
             "required": False,
@@ -278,7 +279,6 @@ class FleetImporter(Processor):
         git_base_branch = self.env.get("git_base_branch", DEFAULT_GIT_BASE_BRANCH)
         author_name = self.env.get("git_author_name", DEFAULT_GIT_AUTHOR_NAME)
         author_email = self.env.get("git_author_email", DEFAULT_GIT_AUTHOR_EMAIL)
-        team_yaml_path = self.env["team_yaml_path"]
         software_dir = self.env.get("software_dir", DEFAULT_SOFTWARE_DIR)
         package_yaml_suffix = self.env.get(
             "package_yaml_suffix", DEFAULT_PACKAGE_YAML_SUFFIX
@@ -418,28 +418,11 @@ class FleetImporter(Processor):
                 fleet_version=fleet_version,
             )
 
-            # Ensure team YAML references the package YAML path
-            team_yaml_abs = repo_dir / team_yaml_path
-            if not team_yaml_abs.exists():
-                raise ProcessorError(f"team_yaml_path not found: {team_yaml_abs}")
-
-            self.output(f"Ensuring team YAML has software entry: {team_yaml_abs}")
-            team_yaml_modified = self._ensure_team_yaml_has_package(
-                team_yaml_abs,
-                ref_path=f"{team_yaml_prefix}{pkg_yaml_path.name}",
-                fleet_version=fleet_version,
-                self_service=self_service,
-                labels_include_any=labels_include_any,
-                labels_exclude_any=labels_exclude_any,
-            )
-
             # Commit if changed
             self._git(["config", "user.name", author_name], cwd=repo_dir)
             self._git(["config", "user.email", author_email], cwd=repo_dir)
             # Stage files
             self._git(["add", str(pkg_yaml_path)], cwd=repo_dir)
-            if team_yaml_modified:
-                self._git(["add", str(team_yaml_abs)], cwd=repo_dir)
 
             # Check if changes need to be committed
             commit_msg = (
@@ -463,6 +446,18 @@ class FleetImporter(Processor):
             self._git(["push", "--set-upstream", "origin", branch_name], cwd=repo_dir)
 
         # Open PR
+        pr_body = self._pr_body(
+            software_title,
+            returned_version,
+            software_slug,
+            title_id,
+            installer_id,
+            team_yaml_prefix,
+            pkg_yaml_path.name,
+            self_service,
+            labels_include_any,
+            labels_exclude_any,
+        )
 
         pr_url = self._open_pull_request(
             github_repo=github_repo,
@@ -470,13 +465,7 @@ class FleetImporter(Processor):
             head=branch_name,
             base=git_base_branch,
             title=f"{software_title} {returned_version}",
-            body=self._pr_body(
-                software_title,
-                returned_version,
-                software_slug,
-                title_id,
-                installer_id,
-            ),
+            body=pr_body,
             labels=pr_labels,
             reviewer=pr_reviewer,
         )
@@ -619,13 +608,18 @@ class FleetImporter(Processor):
         slug: str,
         title_id: int,
         installer_id: int,
+        team_yaml_prefix: str,
+        pkg_yaml_name: str,
+        self_service: bool,
+        labels_include_any: list[str],
+        labels_exclude_any: list[str],
     ) -> str:
         """Compose a concise markdown summary for the PR body.
 
         Examples
         --------
-        >>> FleetImporter._pr_body("Firefox", "1.2.3", "Mozilla/firefox", 42, 99)
-        '### Firefox 1.2.3\n\n- Fleet title ID: `42`\n- Fleet installer ID: `99`\n- Software slug: `Mozilla/firefox`\n- [Changelog](https://github.com/Mozilla/firefox/releases/tag/1.2.3)'
+        >>> FleetImporter._pr_body("Firefox", "1.2.3", "Mozilla/firefox", 42, 99, "../lib/macos/software/", "firefox.yml", True, [], [])
+        '### Firefox 1.2.3\n\n- Fleet title ID: `42`\n- Fleet installer ID: `99`\n- Software slug: `Mozilla/firefox`\n- [Changelog](https://github.com/Mozilla/firefox/releases/tag/1.2.3)\n\n---\n\n### 📋 Team YAML Update Required\n\nTo deploy this software, add the following to your team YAML:\n\n```yaml\n- path: ../lib/macos/software/firefox.yml\n  self_service: true\n```'
         """
 
         lines = [
@@ -640,6 +634,37 @@ class FleetImporter(Processor):
             if "/" in slug:
                 changelog = f"https://github.com/{slug}/releases/tag/{version}"
                 lines.append(f"- [Changelog]({changelog})")
+
+        # Add team YAML instructions
+        lines.extend(
+            [
+                "",
+                "---",
+                "",
+                "### 📋 Team YAML Update Required",
+                "",
+                "To deploy this software, add the following to your team YAML:",
+                "",
+                "```yaml",
+            ]
+        )
+
+        # Build the YAML entry
+        yaml_entry = f"- path: {team_yaml_prefix}{pkg_yaml_name}"
+        lines.append(yaml_entry)
+
+        if self_service:
+            lines.append("  self_service: true")
+        if labels_include_any:
+            lines.append("  labels_include_any:")
+            for label in labels_include_any:
+                lines.append(f"    - {label}")
+        if labels_exclude_any:
+            lines.append("  labels_exclude_any:")
+            for label in labels_exclude_any:
+                lines.append(f"    - {label}")
+
+        lines.append("```")
 
         return "\n".join(lines)
 
@@ -804,87 +829,6 @@ class FleetImporter(Processor):
 
         # Write the package fields directly without a top-level wrapper.
         self._write_yaml(pkg_yaml_path, pkg_block)
-
-    def _ensure_team_yaml_has_package(
-        self,
-        team_yaml_path: Path,
-        ref_path: str,
-        fleet_version: str,
-        self_service: bool,
-        labels_include_any: list[str],
-        labels_exclude_any: list[str],
-    ) -> bool:
-        """Ensure team YAML includes software.packages with the given ref_path.
-        For Fleet >= 4.74.0, also add targeting metadata to the software section.
-        """
-        y = self._read_yaml(team_yaml_path)
-        is_new_format = self._is_fleet_474_or_higher(fleet_version)
-
-        if "software" not in y or y["software"] is None:
-            y["software"] = {}
-        if "packages" not in y["software"] or y["software"]["packages"] is None:
-            y["software"]["packages"] = []
-
-        pkgs = y["software"]["packages"]
-        modified = False
-
-        # Normalize existing paths into comparable strings
-        def pkg_ref(p):
-            # allow either dict {"path": "..."} or raw string
-            if isinstance(p, str):
-                return p
-            if isinstance(p, dict) and "path" in p:
-                return p["path"]
-            return ""
-
-        existing = [pkg_ref(p) for p in pkgs]
-
-        # Add package reference if not exists
-        if ref_path not in existing:
-            pkg_entry = {"path": ref_path}
-
-            # For new format (>= 4.74.0), add targeting metadata to package entry
-            if is_new_format:
-                if self_service:
-                    pkg_entry["self_service"] = True
-                if labels_include_any:
-                    pkg_entry["labels_include_any"] = list(labels_include_any)
-                if labels_exclude_any:
-                    pkg_entry["labels_exclude_any"] = list(labels_exclude_any)
-
-            pkgs.append(pkg_entry)
-            modified = True
-        else:
-            # For new format, update existing package entry with targeting metadata
-            if is_new_format:
-                for i, pkg in enumerate(pkgs):
-                    if pkg_ref(pkg) == ref_path:
-                        if isinstance(pkg, str):
-                            # Convert string to dict
-                            pkg = {"path": pkg}
-                            pkgs[i] = pkg
-
-                        # Update targeting metadata
-                        if self_service and not pkg.get("self_service"):
-                            pkg["self_service"] = True
-                            modified = True
-                        if (
-                            labels_include_any
-                            and pkg.get("labels_include_any") != labels_include_any
-                        ):
-                            pkg["labels_include_any"] = list(labels_include_any)
-                            modified = True
-                        if (
-                            labels_exclude_any
-                            and pkg.get("labels_exclude_any") != labels_exclude_any
-                        ):
-                            pkg["labels_exclude_any"] = list(labels_exclude_any)
-                            modified = True
-                        break
-
-        if modified:
-            self._write_yaml(team_yaml_path, y)
-        return modified
 
     def _open_pull_request(
         self,
