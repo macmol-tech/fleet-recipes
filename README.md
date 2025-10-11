@@ -6,6 +6,7 @@ Upload a freshly built installer to Fleet using the Software API, then create or
 
 ## Current Limitations
 
+- **Single-branch workflow required**: All software packages are added to one shared branch to work around Fleet's GitOps sync deleting packages before PRs merge. This means all updates must be approved together. Individual package PRs will be supported once Fleet resolves [fleetdm/fleet#34137](https://github.com/fleetdm/fleet/issues/34137). See [issue #58](https://github.com/kitzy/fleetimporter/issues/58).
 - Fleet's API does not yet support searching for existing packages by hash. The processor therefore cannot determine if a package has already been uploaded without attempting an upload. When Fleet returns a `409` conflict (package already exists), the processor exits gracefully without performing GitOps operations. A feature request to add hash-based lookups is being tracked in [fleetdm/fleet#32965](https://github.com/fleetdm/fleet/issues/32965).
 
 ---
@@ -14,8 +15,9 @@ Upload a freshly built installer to Fleet using the Software API, then create or
 
 - Uploads a `.pkg` to Fleet for a specific team
 - **Two operation modes:**
-  - **GitOps mode** (default): Creates feature branch, updates YAML, opens pull request
+  - **GitOps mode** (default): Updates shared branch, creates/updates YAML, opens single pull request for all software
   - **Direct mode**: Only uploads package to Fleet without Git operations
+- **Single-branch strategy**: All software updates go to one shared branch (`autopkg/software-updates`) to prevent Fleet GitOps from deleting packages before PR merge
 - Configures software with targeting rules, scripts, and install behavior
 - Idempotent where practical and fails loudly on API errors
 
@@ -50,10 +52,13 @@ Best for production environments where infrastructure-as-code practices are impo
 
 - Uploads package to Fleet
 - Updates GitOps repository with software YAML
-- Creates a feature branch and opens a pull request for review
+- **Uses a single shared branch for all software updates**
+- Creates or updates one pull request for review
 - Maintains audit trail and change history
 - Enables team collaboration through PR reviews
 - Requires Git repository and GitHub credentials
+
+> **⚠️ Important:** This processor uses a **single shared branch** (`autopkg/software-updates`) for all software packages to prevent Fleet's GitOps sync from deleting newly uploaded packages before their PR is merged. See [issue #58](https://github.com/kitzy/fleetimporter/issues/58) for details. All recipe runs will add their packages to the same PR.
 
 **Use when:**
 - You manage Fleet configuration through GitOps
@@ -80,7 +85,7 @@ Best for simplified workflows without GitOps infrastructure:
 
 ### Configuration Examples
 
-**GitOps Mode (default):**
+**GitOps Mode (default - uses shared branch):**
 ```yaml
 Process:
 - Arguments:
@@ -186,7 +191,7 @@ All inputs can be provided as AutoPkg variables in your recipe or via `-k` overr
 | `pr_labels` | No | list[str] | Labels to set on the PR. |
 | `PR_REVIEWER` | No | str | GitHub username to assign as PR reviewer. |
 | `software_slug` | No | str | Override slug used for file and branch names. Defaults to normalized `software_title`. |
-| `branch_prefix` | No | str | Optional prefix for branch names, for example `autopkg`. |
+| `branch_prefix` | No | str | Optional prefix for branch names. Default `autopkg`. The shared branch will be `{prefix}/software-updates`. |
 
 ---
 
@@ -247,6 +252,46 @@ software:
 
 ---
 
+## How Single-Branch GitOps Works
+
+FleetImporter uses a **single shared branch** for all software updates to solve a critical issue with Fleet's GitOps sync.
+
+**The Problem:**
+
+When Fleet runs in GitOps mode, it deletes any packages not defined in the GitOps YAML. If you create individual PRs for each software package:
+
+1. FleetImporter uploads Firefox to Fleet and opens PR #1
+2. Before merging PR #1, FleetImporter uploads Chrome and opens PR #2
+3. When PR #2 is merged, GitOps syncs and **deletes Firefox** because it's not in the merged YAML yet
+4. PR #1 now references a deleted package and fails
+
+See [issue #58](https://github.com/kitzy/fleetimporter/issues/58) and the underlying Fleet issue [fleetdm/fleet#34137](https://github.com/fleetdm/fleet/issues/34137).
+
+**The Solution:**
+
+FleetImporter automatically uses a single shared branch (`autopkg/software-updates` by default):
+
+1. **First recipe run (Firefox):** Creates branch `autopkg/software-updates`, commits Firefox YAML, opens PR
+2. **Second recipe run (Chrome):** Checks out existing `autopkg/software-updates` branch, commits Chrome YAML to same branch
+3. **Subsequent runs:** Continue adding packages to the same branch and PR
+4. **When PR merges:** All packages are available at once, preventing any deletions
+
+**Benefits:**
+
+- ✅ **Prevents package deletion** - All packages protected until PR merges
+- ✅ **Zero configuration** - Works automatically, no setup needed
+- ✅ **Batch approval** - Review and merge all updates together
+- ✅ **Simpler workflow** - One PR instead of many
+
+**Tradeoffs:**
+
+- ⚠️ **All-or-nothing merge** - Can't selectively approve individual packages
+- ⚠️ **Requires reviewing commits** - Individual package changes are in separate commits within the PR
+
+This approach will remain until Fleet implements a fix to preserve undeclared packages during GitOps runs.
+
+---
+
 ## Example AutoPkg Recipe Integration
 
 Add the processor after your build step. Example excerpt from a YAML recipe:
@@ -262,25 +307,7 @@ Process:
     version: '%version%'
     
     # Fleet API configuration
-    fleet_api_base: '%FLEET_API_BASE%'
-    fleet_api_token: '%FLEET_API_TOKEN%'
-    team_id: '%FLEET_TEAM_ID%'
-    
-    # Software configuration
-    self_service: true
-    
-    # Git/GitHub configuration
-    git_repo_url: '%FLEET_GITOPS_REPO_URL%'
-    github_token: '%FLEET_GITOPS_GITHUB_TOKEN%'
-    
-    # GitOps file paths
-    team_yaml_path: '%FLEET_TEAM_YAML_PATH%'
-    
-    # Optional features
-    skip_pkg_upload: false
-    verbose_mode: true
-  Processor: FleetImporter
-```
+````
 
 ---
 

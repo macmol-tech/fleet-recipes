@@ -487,11 +487,29 @@ class FleetImporter(Processor):
                 ]
             )
 
-            # Create branch
-            branch_name = f"{software_slug}-{returned_version}"
+            # Single-branch strategy: all software updates go to one shared branch
+            # This prevents GitOps from deleting packages before PR is merged
+            # See https://github.com/kitzy/fleetimporter/issues/58
+            branch_name = "autopkg/software-updates"
             if branch_prefix:
-                branch_name = f"{branch_prefix.rstrip('/')}/{branch_name}"
-            self._git(["checkout", "-b", branch_name], cwd=repo_dir)
+                branch_name = f"{branch_prefix.rstrip('/')}/software-updates"
+
+            # Check if branch exists remotely
+            try:
+                self._git(
+                    ["ls-remote", "--exit-code", "--heads", "origin", branch_name],
+                    cwd=repo_dir,
+                )
+                # Branch exists remotely, fetch and checkout
+                self.output(f"Shared branch '{branch_name}' exists, checking out...")
+                self._git(["fetch", "origin", branch_name], cwd=repo_dir)
+                self._git(["checkout", branch_name], cwd=repo_dir)
+            except ProcessorError:
+                # Branch doesn't exist, create it
+                self.output(
+                    f"Creating new shared branch '{branch_name}' from {git_base_branch}..."
+                )
+                self._git(["checkout", "-b", branch_name], cwd=repo_dir)
 
             # Ensure software YAML exists/updated
             sw_dir = repo_dir / software_dir
@@ -543,8 +561,9 @@ class FleetImporter(Processor):
             # Push
             self._git(["push", "--set-upstream", "origin", branch_name], cwd=repo_dir)
 
-        # Open PR
-        pr_body = self._pr_body(
+        # Prepare PR title and body for shared-branch workflow
+        pr_title = "Software updates from AutoPkg"
+        pr_body = self._pr_body_shared(
             software_title,
             returned_version,
             software_slug,
@@ -557,15 +576,17 @@ class FleetImporter(Processor):
             labels_exclude_any,
         )
 
+        # Open or update PR (shared mode always enabled)
         pr_url = self._open_pull_request(
             github_repo=github_repo,
             github_token=github_token,
             head=branch_name,
             base=git_base_branch,
-            title=f"{software_title} {returned_version}",
+            title=pr_title,
             body=pr_body,
             labels=pr_labels,
             reviewer=pr_reviewer,
+            shared_mode=True,
         )
 
         # Outputs
@@ -869,6 +890,94 @@ class FleetImporter(Processor):
 
         return "\n".join(lines)
 
+    def _pr_body_shared(
+        self,
+        software_title: str,
+        version: str,
+        slug: str,
+        title_id: int | None,
+        installer_id: int | None,
+        team_yaml_prefix: str,
+        pkg_yaml_name: str,
+        self_service: bool,
+        labels_include_any: list[str],
+        labels_exclude_any: list[str],
+    ) -> str:
+        """Compose PR body for shared branch mode with all software updates.
+
+        In shared mode, multiple packages are added to the same PR, so we show
+        a summary of this specific package that was just added.
+        """
+
+        lines = [
+            "## AutoPkg Software Updates",
+            "",
+            "This PR contains software package updates from AutoPkg. "
+            "All packages in this PR are already uploaded to Fleet.",
+            "",
+            "### Latest Update",
+            "",
+            f"**{software_title} {version}** was just added to this PR.",
+            "",
+        ]
+
+        if title_id is not None:
+            lines.append(f"- Fleet title ID: `{title_id}`")
+        if installer_id is not None:
+            lines.append(f"- Fleet installer ID: `{installer_id}`")
+
+        if slug:
+            lines.append(f"- Software slug: `{slug}`")
+            if "/" in slug:
+                changelog = f"https://github.com/{slug}/releases/tag/{version}"
+                lines.append(f"- [Changelog]({changelog})")
+
+        # Add team YAML instructions
+        lines.extend(
+            [
+                "",
+                "---",
+                "",
+                "### 📋 Team YAML Update Required",
+                "",
+                "To deploy the software in this PR, add the package references to your team YAML:",
+                "",
+                "**For this package:**",
+                "",
+                "```yaml",
+            ]
+        )
+
+        # Build the YAML entry for this specific package
+        yaml_entry = f"- path: {team_yaml_prefix}{pkg_yaml_name}"
+        lines.append(yaml_entry)
+
+        if self_service:
+            lines.append("  self_service: true")
+        if labels_include_any:
+            lines.append("  labels_include_any:")
+            for label in labels_include_any:
+                lines.append(f"    - {label}")
+        if labels_exclude_any:
+            lines.append("  labels_exclude_any:")
+            for label in labels_exclude_any:
+                lines.append(f"    - {label}")
+
+        lines.extend(
+            [
+                "```",
+                "",
+                "---",
+                "",
+                "### ✅ Benefits of Single-PR Workflow",
+                "",
+                "This PR aggregates multiple software updates to prevent GitOps from deleting packages before approval. "
+                "All packages in this branch are safe from deletion until the PR is merged or closed.",
+            ]
+        )
+
+        return "\n".join(lines)
+
     def _fleet_upload_package(
         self,
         base_url,
@@ -1031,7 +1140,27 @@ class FleetImporter(Processor):
         body: str,
         labels: list[str],
         reviewer: str = "",
+        shared_mode: bool = False,
     ) -> str:
+        """Open or find existing pull request.
+
+        In shared_mode, if a PR already exists for the head branch, we return
+        its URL without attempting to create a new one (which would fail with 422).
+        The PR body is not updated because GitHub API doesn't easily support that,
+        but the new commit will be visible in the PR automatically.
+        """
+        # In shared mode, check if PR already exists first
+        if shared_mode:
+            existing_pr_url = self._find_existing_pr_url(
+                github_repo, github_token, head, base
+            )
+            if existing_pr_url:
+                self.output(
+                    f"Shared branch PR already exists: {existing_pr_url}. "
+                    "New commit has been added to existing PR."
+                )
+                return existing_pr_url
+
         api = f"https://api.github.com/repos/{github_repo}/pulls"
         headers = {
             "Authorization": f"Bearer {github_token}",
