@@ -145,8 +145,8 @@ GitOps mode provides a workaround for [Fleet issue #34137](https://github.com/fl
 
 **Additional Dependencies:**
 ```bash
-# Install boto3 for AWS S3 operations
-pip install boto3 PyYAML
+# Install PyYAML for YAML file manipulation (if not already installed)
+pip install PyYAML
 
 # Verify AWS credentials are configured
 aws configure list
@@ -156,6 +156,8 @@ export AWS_ACCESS_KEY_ID="your-access-key"
 export AWS_SECRET_ACCESS_KEY="your-secret-key"
 export AWS_DEFAULT_REGION="us-east-1"
 ```
+
+> **Note:** GitOps mode uses the AWS S3 REST API with Signature Version 4 authentication, which only requires the `requests` library (already included with AutoPkg). No additional AWS SDK dependencies like boto3 are needed.
 
 **AWS Permissions Required:**
 - `s3:PutObject` - Upload new packages
