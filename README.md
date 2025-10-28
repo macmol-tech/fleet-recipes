@@ -162,6 +162,46 @@ export AWS_DEFAULT_REGION="us-east-1"
 - `s3:ListBucket` - List existing versions for cleanup
 - `s3:DeleteObject` - Remove old versions based on retention policy
 
+**Example IAM Policy:**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "FleetPackageUpload",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::my-fleet-packages/software/*"
+    },
+    {
+      "Sid": "FleetPackageList",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket"
+      ],
+      "Resource": "arn:aws:s3:::my-fleet-packages",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": "software/*"
+        }
+      }
+    },
+    {
+      "Sid": "FleetPackageCleanup",
+      "Effect": "Allow",
+      "Action": [
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::my-fleet-packages/software/*"
+    }
+  ]
+}
+```
+
+Replace `my-fleet-packages` with your actual bucket name. This policy is scoped to only the `software/` prefix where packages are stored.
+
 **GitHub Permissions Required:**
 - GitHub personal access token with `repo` scope
 - Write access to the GitOps repository
