@@ -999,7 +999,7 @@ class FleetImporter(Processor):
 
         # Add optional icon path if provided
         if icon_path:
-            package_entry["icon_path"] = {"path": icon_path}
+            package_entry["icon"] = {"path": icon_path}
 
         # Add optional script paths if provided
         if install_script:
