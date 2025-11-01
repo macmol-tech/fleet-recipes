@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import tempfile
 import urllib.error
@@ -25,7 +26,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
-import requests
+import certifi
 import yaml
 from autopkglib import Processor, ProcessorError
 
@@ -149,6 +150,11 @@ class FleetImporter(Processor):
             "default": "",
             "description": "Custom uninstall script body (string).",
         },
+        "icon": {
+            "required": False,
+            "default": "",
+            "description": "Path to PNG icon file (square, 120x120 to 1024x1024 px) to upload to Fleet.",
+        },
         "pre_install_query": {
             "required": False,
             "default": "",
@@ -177,6 +183,10 @@ class FleetImporter(Processor):
             "description": "Name of the Git branch created for the PR (GitOps mode only)."
         },
     }
+
+    def _get_ssl_context(self):
+        """Create an SSL context using certifi's CA bundle."""
+        return ssl.create_default_context(cafile=certifi.where())
 
     def main(self):
         # Check if GitOps mode is enabled
@@ -294,6 +304,34 @@ class FleetImporter(Processor):
         self.env["fleet_installer_id"] = installer_id
         if hash_sha256:
             self.env["hash_sha256"] = hash_sha256
+
+        # Upload icon if provided
+        icon_path_str = self.env.get("icon", "").strip()
+        if icon_path_str and title_id:
+            # Try to resolve icon path relative to recipe directory first
+            icon_path = Path(icon_path_str)
+            if not icon_path.is_absolute():
+                # Get recipe directory from AutoPkg environment
+                recipe_dir = self.env.get("RECIPE_DIR")
+                if recipe_dir:
+                    icon_path = (Path(recipe_dir) / icon_path_str).resolve()
+                else:
+                    icon_path = icon_path.expanduser().resolve()
+            else:
+                icon_path = icon_path.expanduser().resolve()
+            if icon_path.exists():
+                self.output(f"Icon file specified: {icon_path}")
+                self._fleet_upload_icon(
+                    fleet_api_base,
+                    fleet_token,
+                    title_id,
+                    team_id,
+                    icon_path,
+                )
+            else:
+                self.output(
+                    f"Warning: Icon file not found: {icon_path}. Skipping icon upload."
+                )
 
     def _run_gitops_workflow(self):
         """Run the GitOps workflow: upload to S3, update YAML, create PR."""
@@ -587,20 +625,26 @@ class FleetImporter(Processor):
             head_headers = self._aws_sign_v4(
                 "HEAD", url, region, "s3", access_key, secret_key
             )
-            head_response = requests.head(url, headers=head_headers, timeout=30)
-
-            if head_response.status_code == 200:
-                self.output(
-                    f"Package {software_title} {version} already exists in S3 at {s3_key}. Skipping upload."
-                )
-                return s3_key
-            elif head_response.status_code == 404:
-                self.output("Package not found in S3, proceeding with upload")
-            else:
-                # Some other error occurred
-                raise ProcessorError(
-                    f"S3 HEAD request failed with status {head_response.status_code}: {head_response.text}"
-                )
+            head_request = urllib.request.Request(
+                url, headers=head_headers, method="HEAD"
+            )
+            try:
+                with urllib.request.urlopen(
+                    head_request, timeout=30, context=self._get_ssl_context()
+                ) as head_response:
+                    if head_response.getcode() == 200:
+                        self.output(
+                            f"Package {software_title} {version} already exists in S3 at {s3_key}. Skipping upload."
+                        )
+                        return s3_key
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    self.output("Package not found in S3, proceeding with upload")
+                else:
+                    # Some other error occurred
+                    raise ProcessorError(
+                        f"S3 HEAD request failed with status {e.code}: {e.read().decode()}"
+                    )
 
             # Upload file using PUT request
             self.output(f"Uploading to s3://{bucket}/{s3_key}")
@@ -622,19 +666,27 @@ class FleetImporter(Processor):
             )
 
             # Upload to S3
-            put_response = requests.put(
-                url, data=file_content, headers=put_headers, timeout=900
+            put_request = urllib.request.Request(
+                url, data=file_content, headers=put_headers, method="PUT"
             )
 
-            if put_response.status_code not in (200, 201):
+            try:
+                with urllib.request.urlopen(
+                    put_request, timeout=900, context=self._get_ssl_context()
+                ) as put_response:
+                    if put_response.getcode() not in (200, 201):
+                        raise ProcessorError(
+                            f"S3 upload failed with status {put_response.getcode()}: {put_response.read().decode()}"
+                        )
+            except urllib.error.HTTPError as e:
                 raise ProcessorError(
-                    f"S3 upload failed with status {put_response.status_code}: {put_response.text}"
+                    f"S3 upload failed with status {e.code}: {e.read().decode()}"
                 )
 
             self.output(f"Upload complete: s3://{bucket}/{s3_key}")
             return s3_key
 
-        except requests.RequestException as e:
+        except (urllib.error.URLError, OSError) as e:
             raise ProcessorError(f"S3 upload failed: {e}")
 
     def _construct_cloudfront_url(self, cloudfront_domain: str, s3_key: str) -> str:
@@ -682,15 +734,24 @@ class FleetImporter(Processor):
             list_headers = self._aws_sign_v4(
                 "GET", list_url, region, "s3", access_key, secret_key
             )
-            list_response = requests.get(list_url, headers=list_headers, timeout=30)
+            list_request = urllib.request.Request(list_url, headers=list_headers)
 
-            if list_response.status_code != 200:
+            try:
+                with urllib.request.urlopen(
+                    list_request, timeout=30, context=self._get_ssl_context()
+                ) as list_response:
+                    if list_response.getcode() != 200:
+                        raise ProcessorError(
+                            f"S3 list failed with status {list_response.getcode()}: {list_response.read().decode()}"
+                        )
+                    list_content = list_response.read()
+            except urllib.error.HTTPError as e:
                 raise ProcessorError(
-                    f"S3 list failed with status {list_response.status_code}: {list_response.text}"
+                    f"S3 list failed with status {e.code}: {e.read().decode()}"
                 )
 
             # Parse XML response
-            root = ET.fromstring(list_response.content)
+            root = ET.fromstring(list_content)
             ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
             contents = root.findall("s3:Contents", ns)
 
@@ -756,20 +817,26 @@ class FleetImporter(Processor):
                     delete_headers = self._aws_sign_v4(
                         "DELETE", delete_url, region, "s3", access_key, secret_key
                     )
-                    delete_response = requests.delete(
-                        delete_url, headers=delete_headers, timeout=30
+                    delete_request = urllib.request.Request(
+                        delete_url, headers=delete_headers, method="DELETE"
                     )
-                    if delete_response.status_code not in (200, 204):
-                        self.output(
-                            f"Warning: Failed to delete {key}: {delete_response.status_code}"
-                        )
+                    try:
+                        with urllib.request.urlopen(
+                            delete_request, timeout=30, context=self._get_ssl_context()
+                        ) as delete_response:
+                            if delete_response.getcode() not in (200, 204):
+                                self.output(
+                                    f"Warning: Failed to delete {key}: {delete_response.getcode()}"
+                                )
+                    except urllib.error.HTTPError as e:
+                        self.output(f"Warning: Failed to delete {key}: {e.code}")
 
             self.output(
                 f"Cleanup complete. Kept versions: {versions_to_keep}, "
                 f"Deleted versions: {versions_to_delete}"
             )
 
-        except requests.RequestException as e:
+        except (urllib.error.URLError, urllib.error.HTTPError) as e:
             # Log error but don't fail the entire workflow
             self.output(f"Warning: S3 cleanup failed: {e}")
 
@@ -1132,7 +1199,9 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
                 headers=headers,
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(
+                req, timeout=30, context=self._get_ssl_context()
+            ) as resp:
                 if resp.getcode() in (200, 201):
                     response_data = json.loads(resp.read().decode())
                     pr_url = response_data.get("html_url")
@@ -1218,7 +1287,9 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
             }
             req = urllib.request.Request(search_url, headers=headers)
 
-            with urllib.request.urlopen(req, timeout=FLEET_VERSION_TIMEOUT) as resp:
+            with urllib.request.urlopen(
+                req, timeout=FLEET_VERSION_TIMEOUT, context=self._get_ssl_context()
+            ) as resp:
                 if resp.getcode() == 200:
                     data = json.loads(resp.read().decode())
                     software_titles = data.get("software_titles", [])
@@ -1354,14 +1425,25 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
             }
             req = urllib.request.Request(url, headers=headers)
 
-            with urllib.request.urlopen(req, timeout=FLEET_VERSION_TIMEOUT) as resp:
+            with urllib.request.urlopen(
+                req, timeout=FLEET_VERSION_TIMEOUT, context=self._get_ssl_context()
+            ) as resp:
                 if resp.getcode() == 200:
                     data = json.loads(resp.read().decode())
                     version = data.get("version", "")
                     if version:
-                        # Parse version string like "4.74.0-dev" or "4.74.0"
+                        # Parse version string like "4.74.0-dev", "4.74.0", or "0.0.0-SNAPSHOT"
                         # Extract just the semantic version part
-                        return version.split("-")[0]
+                        base_version = version.split("-")[0]
+                        # If version is 0.0.0, it's a snapshot/development build
+                        # Treat it as meeting minimum version requirements
+                        if base_version == "0.0.0":
+                            self.output(
+                                f"Detected Fleet snapshot build: {version}. "
+                                "Assuming compatibility with minimum version requirements."
+                            )
+                            return FLEET_MINIMUM_VERSION
+                        return base_version
 
         except (
             urllib.error.HTTPError,
@@ -1448,7 +1530,9 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
         }
         req = urllib.request.Request(url, data=body.getvalue(), headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=FLEET_UPLOAD_TIMEOUT) as resp:
+            with urllib.request.urlopen(
+                req, timeout=FLEET_UPLOAD_TIMEOUT, context=self._get_ssl_context()
+            ) as resp:
                 resp_body = resp.read()
                 status = resp.getcode()
         except urllib.error.HTTPError as e:
@@ -1462,3 +1546,71 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
         if status != 200:
             raise ProcessorError(f"Fleet upload failed: {status} {resp_body.decode()}")
         return json.loads(resp_body or b"{}")
+
+    def _fleet_upload_icon(
+        self, base_url: str, token: str, title_id: int, team_id: int, icon_path: Path
+    ) -> None:
+        """
+        Upload a software icon to Fleet.
+
+        Args:
+            base_url: Fleet base URL
+            token: Fleet API token
+            title_id: Software title ID from package upload
+            team_id: Team ID for the icon
+            icon_path: Path to PNG icon file (square, 120x120 to 1024x1024 px)
+        """
+        url = (
+            f"{base_url}/api/v1/fleet/software/titles/{title_id}/icon?team_id={team_id}"
+        )
+        self.output(f"Uploading icon to Fleet: {icon_path}")
+
+        # Validate icon file exists and is PNG
+        if not icon_path.exists():
+            raise ProcessorError(f"Icon file not found: {icon_path}")
+
+        # Check file extension
+        if icon_path.suffix.lower() != ".png":
+            self.output(
+                f"Warning: Icon file {icon_path.name} is not a PNG file. Fleet requires PNG format."
+            )
+
+        boundary = (
+            "----FleetIconUploadBoundary" + hashlib.sha1(os.urandom(16)).hexdigest()
+        )
+        body = io.BytesIO()
+
+        # Write the icon file
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(
+            f'Content-Disposition: form-data; name="icon"; filename="{icon_path.name}"\r\n'.encode()
+        )
+        body.write(b"Content-Type: image/png\r\n\r\n")
+        with open(icon_path, "rb") as f:
+            shutil.copyfileobj(f, body)
+        body.write(b"\r\n")
+        body.write(f"--{boundary}--\r\n".encode())
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        }
+
+        req = urllib.request.Request(
+            url, data=body.getvalue(), headers=headers, method="PUT"
+        )
+
+        try:
+            with urllib.request.urlopen(
+                req, timeout=FLEET_VERSION_TIMEOUT, context=self._get_ssl_context()
+            ) as resp:
+                status = resp.getcode()
+        except urllib.error.HTTPError as e:
+            raise ProcessorError(
+                f"Fleet icon upload failed: {e.code} {e.read().decode()}"
+            )
+
+        if status != 200:
+            raise ProcessorError(f"Fleet icon upload failed with status: {status}")
+
+        self.output(f"Icon uploaded successfully for software title ID: {title_id}")
