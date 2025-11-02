@@ -3,12 +3,6 @@ name: Validate Recipes and Processor
 on:
   pull_request:
     branches: [ main ]
-    paths:
-      - '**/*.py'
-      - '**/*.yaml'
-      - '**/*.yml'
-      - 'requirements.txt'
-      - '.github/workflows/**'
 
 jobs:
   validate-python:
