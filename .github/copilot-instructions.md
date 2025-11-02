@@ -12,12 +12,14 @@ Always reference these instructions first and fallback to search or bash command
   - `python3 -m pip install black isort flake8 flake8-bugbear` -- takes 10-30 seconds. NEVER CANCEL.
   - Note: The processor uses only native Python libraries available in AutoPkg's bundled Python (no external dependencies required for runtime)
 - Install AutoPkg (macOS only):
-  - `brew install autopkg` -- takes 2-5 minutes. NEVER CANCEL. Set timeout to 10+ minutes.
-  - `autopkg version`
+  - Download the latest release from https://github.com/autopkg/autopkg/releases/latest
+  - Install the `.pkg` file (e.g., `autopkg-2.7.3.pkg`)
+  - Verify installation: `autopkg version`
+  - Installation takes 1-2 minutes. NEVER CANCEL.
 - Configure AutoPkg repositories:
   - `autopkg repo-add https://github.com/autopkg/recipes.git` -- takes 30-60 seconds. NEVER CANCEL.
   - `autopkg repo-add https://github.com/autopkg/homebysix-recipes.git` -- takes 30-60 seconds. NEVER CANCEL.
-  - `autopkg repo-add https://github.com/fleetdm/fleet-autopkg-recipes.git` -- takes 30-60 seconds. NEVER CANCEL.
+  - Note: This repository contains its own FleetImporter processor, so no additional repo is needed for Fleet integration
 - Validate Python syntax and code style:
   - `python3 -m py_compile FleetImporter/FleetImporter.py` -- takes < 1 second.
   - `python3 -m black --check FleetImporter/FleetImporter.py` -- takes < 1 second.
@@ -26,21 +28,30 @@ Always reference these instructions first and fallback to search or bash command
 
 ### Critical macOS Setup Notes
 - AutoPkg ONLY works on macOS. Do not attempt to install on Linux/Windows.
-- Homebrew is required: `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`
+- Install AutoPkg from GitHub releases: https://github.com/autopkg/autopkg/releases/latest
 - Ensure Xcode Command Line Tools: `xcode-select --install`
 - Python 3.9+ is required: `python3 --version`
 
 ### Environment Variables for Local Testing
-- Export required tokens:
-  - `export FLEET_GITOPS_GITHUB_TOKEN="your-github-token"`
+- For Direct Mode (Fleet API):
+  - `export FLEET_API_BASE="https://fleet.example.com"`
   - `export FLEET_API_TOKEN="your-fleet-api-token"`
+  - `export FLEET_TEAM_ID="1"`
+- For GitOps Mode (S3/GitHub):
+  - `export AWS_S3_BUCKET="your-fleet-packages-bucket"`
+  - `export AWS_CLOUDFRONT_DOMAIN="d1234567890abc.cloudfront.net"`
+  - `export FLEET_GITOPS_REPO_URL="https://github.com/org/fleet-gitops.git"`
+  - `export FLEET_GITOPS_GITHUB_TOKEN="your-github-token"`
+  - `export FLEET_GITOPS_SOFTWARE_DIR="lib/macos/software"`
+  - `export FLEET_GITOPS_TEAM_YAML_PATH="teams/workstations.yml"`
 - Set `GIT_TERMINAL_PROMPT=0` to prevent interactive Git authentication prompts
 
 ### Testing and Validation
 - Test AutoPkg Python has required modules: `/Library/AutoPkg/Python3/Python.framework/Versions/Current/bin/python3 -c "import yaml, urllib.request, json; print('Dependencies OK')"`
-- Validate recipe YAML syntax: `python3 -c "import yaml; yaml.safe_load(open('Google/GoogleChrome.fleet.recipe.yaml'))"`
+- Validate recipe YAML syntax: `python3 -c "import yaml; yaml.safe_load(open('GitHub/GithubDesktop.fleet.direct.recipe.yaml'))"`
 - Test Git operations: `git status && git log --oneline -5`
-- Run recipe locally (macOS only): `autopkg run Google/GoogleChrome.fleet.recipe.yaml -k FLEET_API_TOKEN="$FLEET_API_TOKEN" -k FLEET_GITOPS_GITHUB_TOKEN="$FLEET_GITOPS_GITHUB_TOKEN"`
+- Run direct mode recipe locally (macOS only): `autopkg run GitHub/GithubDesktop.fleet.direct.recipe.yaml -v`
+- Run gitops mode recipe locally (macOS only): `autopkg run GitHub/GithubDesktop.fleet.gitops.recipe.yaml -v`
 
 ### File Validation
 - Always validate YAML syntax when modifying recipe files
@@ -82,7 +93,7 @@ This project follows AutoPkg's strict code style requirements. ALL Python code m
   - `python3 -m black --check --diff FleetImporter/FleetImporter.py` -- check formatting
   - `python3 -m isort --check-only --diff FleetImporter/FleetImporter.py` -- check import sorting
   - `python3 -m flake8 FleetImporter/FleetImporter.py` -- check linting with bugbear
-- Test YAML parsing: `python3 -c "import yaml; [yaml.safe_load(open(f)) for f in ['Google/GoogleChrome.fleet.recipe.yaml', 'GitHub/GithubDesktop.fleet.recipe.yaml']]"`
+- Test YAML parsing: `python3 -c "import yaml; [yaml.safe_load(open(f)) for f in ['GitHub/GithubDesktop.fleet.direct.recipe.yaml', 'GitHub/GithubDesktop.fleet.gitops.recipe.yaml', 'Anthropic/Claude.fleet.direct.recipe.yaml']]"`
 - Validate Git operations work correctly
 - If modifying the processor, test with a sample recipe using autopkg (requires macOS)
 
@@ -96,11 +107,11 @@ This project follows AutoPkg's strict code style requirements. ALL Python code m
 
 ### Syntax Validation (Linux/macOS)
 - `python3 -m py_compile FleetImporter/FleetImporter.py` -- takes < 1 second
-- `python3 -c "import yaml; yaml.safe_load(open('Google/GoogleChrome.fleet.recipe.yaml'))"` -- takes < 1 second
+- `python3 -c "import yaml; yaml.safe_load(open('Anthropic/Claude.fleet.direct.recipe.yaml'))"` -- takes < 1 second
 
 ### Full Recipe Testing (macOS only)
-- `autopkg run Google/GoogleChrome.fleet.recipe.yaml -v` -- takes 5-15 minutes for download/build. NEVER CANCEL. Set timeout to 30+ minutes.
-- `autopkg run GitHub/GithubDesktop.fleet.recipe.yaml -v` -- takes 5-15 minutes for download/build. NEVER CANCEL. Set timeout to 30+ minutes.
+- `autopkg run Anthropic/Claude.fleet.direct.recipe.yaml -v` -- takes 5-15 minutes for download/build. NEVER CANCEL. Set timeout to 30+ minutes.
+- `autopkg run GitHub/GithubDesktop.fleet.gitops.recipe.yaml -v` -- takes 5-15 minutes for download/build. NEVER CANCEL. Set timeout to 30+ minutes.
 
 ### Environment Testing
 - Check Python version: `python3 --version` (requires 3.9+)
@@ -111,15 +122,25 @@ This project follows AutoPkg's strict code style requirements. ALL Python code m
 
 ### Key Files
 - `FleetImporter/FleetImporter.py` - Main AutoPkg processor for Fleet integration
-- `Google/GoogleChrome.fleet.recipe.yaml` - Example recipe for Google Chrome
-- `GitHub/GithubDesktop.fleet.recipe.yaml` - Example recipe for GitHub Desktop
+- `Anthropic/Claude.fleet.direct.recipe.yaml` - Example direct mode recipe for Claude
+- `Anthropic/Claude.fleet.gitops.recipe.yaml` - Example GitOps mode recipe for Claude
+- `GitHub/GithubDesktop.fleet.direct.recipe.yaml` - Example direct mode recipe for GitHub Desktop
+- `GitHub/GithubDesktop.fleet.gitops.recipe.yaml` - Example GitOps mode recipe for GitHub Desktop
 - `README.md` - Comprehensive documentation
 - `.gitignore` - Excludes Python cache and IDE files
+- `.env.example` - Example environment variables for local testing
 
 ### File Locations
 - Main processor: `./FleetImporter/FleetImporter.py`
-- Recipe files: `*.fleet.recipe.yaml`
+- Recipe files: `<VendorName>/<SoftwareTitle>.fleet.direct.recipe.yaml` or `<VendorName>/<SoftwareTitle>.fleet.gitops.recipe.yaml`
 - Documentation: `./README.md`
+
+### Recipe Types
+This repository uses two types of recipes:
+- **Direct Mode** (`.fleet.direct.recipe.yaml`): Upload packages directly to Fleet via API
+- **GitOps Mode** (`.fleet.gitops.recipe.yaml`): Upload to S3 and create pull requests for Git-based configuration
+
+All recipes follow a consistent directory structure: `<VendorName>/<SoftwareTitle>.fleet.(direct|gitops).recipe.yaml`
 
 ### Recipe Structure Understanding
 AutoPkg recipes follow this pattern:
@@ -167,16 +188,16 @@ Process:
     team_id: "%FLEET_TEAM_ID%"
     self_service: true
     icon: GoogleChrome.png  # Optional icon file
-  Processor: com.github.kitzy.FleetImporter/FleetImporter
+  Processor: com.github.fleet.FleetImporter/FleetImporter
 ```
 
 ## Common Tasks
 
 ### Creating New Recipes
-- Copy an existing recipe file (e.g., `Google/GoogleChrome.fleet.recipe.yaml`)
+- Copy an existing recipe file (e.g., `GitHub/GithubDesktop.fleet.direct.recipe.yaml` or `GitHub/GithubDesktop.fleet.gitops.recipe.yaml`)
 - Update the `ParentRecipe` to point to upstream AutoPkg recipe
 - Modify processor arguments for your specific Fleet/GitOps configuration
-- Test with `autopkg run YourNew.fleet.recipe.yaml -v`
+- Test with `autopkg run YourNew.fleet.direct.recipe.yaml -v` or `autopkg run YourNew.fleet.gitops.recipe.yaml -v`
 
 ### Modifying the Processor
 - Edit `FleetImporter/FleetImporter.py`
@@ -195,7 +216,7 @@ Process:
 ## Timing Expectations
 
 - Python dependency installation: 10-30 seconds
-- AutoPkg installation via brew: 2-5 minutes -- NEVER CANCEL
+- AutoPkg installation (download + install .pkg): 1-2 minutes -- NEVER CANCEL
 - AutoPkg repo addition: 30-60 seconds each -- NEVER CANCEL
 - Recipe execution (full build): 5-15 minutes -- NEVER CANCEL. Set timeout to 30+ minutes
 - Python syntax validation: < 1 second (measured: 0 seconds)
@@ -208,7 +229,7 @@ Process:
 
 ### macOS (Full Functionality)
 - Required for AutoPkg execution
-- Homebrew for AutoPkg installation
+- Install AutoPkg from GitHub releases (no Homebrew required)
 - All features available
 
 ### Linux/Windows (Limited)
@@ -228,8 +249,8 @@ Process:
 ## Troubleshooting
 
 ### Common Issues
-- **AutoPkg not found**: Install via `brew install autopkg` (macOS only)
-- **Python import errors**: Install dependencies with `pip install requests PyYAML`
+- **AutoPkg not found**: Download and install from https://github.com/autopkg/autopkg/releases/latest (macOS only)
+- **Python import errors**: For development tools: `pip install black isort flake8 flake8-bugbear PyYAML`
 - **YAML syntax errors**: Validate with `python3 -c "import yaml; yaml.safe_load(open('file.yaml'))"`
 - **Git authentication**: Set `FLEET_GITOPS_GITHUB_TOKEN` environment variable
 - **Fleet API errors**: Verify `FLEET_API_TOKEN` and Fleet server URL
@@ -238,7 +259,7 @@ Process:
 - `autopkg version` - Check AutoPkg installation
 - `python3 --version` - Verify Python 3.9+
 - `git --version` - Check Git availability
-- `python3 -c "import yaml, requests"` - Test dependencies
+- `python3 -c "import yaml"` - Test YAML module availability
 
 ## Integration Details
 
@@ -269,15 +290,19 @@ drwxr-xr-x 3 runner runner  4096 Sep 17 22:57 .
 drwxr-xr-x 3 runner runner  4096 Sep 17 22:57 ..
 drwxrwxr-x 7 runner runner  4096 Sep 17 22:57 .git
 -rw-rw-r-- 1 runner runner   267 Sep 17 22:57 .gitignore
--rw-rw-r-- 1 runner runner 27406 Sep 17 22:57 FleetImporter.py
--rw-rw-r-- 1 runner runner  1114 Sep 17 22:57 GithubDesktop.fleet.recipe.yaml
--rw-rw-r-- 1 runner runner  1187 Sep 17 22:57 GoogleChrome.fleet.recipe.yaml
+drwxr-xr-x 2 runner runner  4096 Sep 17 22:57 Anthropic
+drwxr-xr-x 2 runner runner  4096 Sep 17 22:57 Caffeine
+drwxr-xr-x 2 runner runner  4096 Sep 17 22:57 FleetImporter
+drwxr-xr-x 2 runner runner  4096 Sep 17 22:57 GitHub
+drwxr-xr-x 2 runner runner  4096 Sep 17 22:57 GPGSuite
+drwxr-xr-x 2 runner runner  4096 Sep 17 22:57 Raycast Technologies
+drwxr-xr-x 2 runner runner  4096 Sep 17 22:57 Signal
 -rw-rw-r-- 1 runner runner 13740 Sep 17 22:57 README.md
 ```
 
 ### Python Dependencies Check
 ```
-python3 -c "import yaml, requests; print('Dependencies OK')"
+python3 -c "import yaml, urllib.request, json; print('Dependencies OK')"
 Dependencies OK
 ```
 
@@ -291,8 +316,13 @@ nothing to commit, working tree clean
 
 ### Environment Variables Setup
 ```
-export FLEET_GITOPS_GITHUB_TOKEN="your-token"
+export FLEET_API_BASE="https://fleet.example.com"
 export FLEET_API_TOKEN="your-fleet-token"
+export FLEET_TEAM_ID="1"
+export FLEET_GITOPS_GITHUB_TOKEN="your-github-token"
+export AWS_S3_BUCKET="your-fleet-packages-bucket"
+export AWS_CLOUDFRONT_DOMAIN="d1234567890abc.cloudfront.net"
+export FLEET_GITOPS_REPO_URL="https://github.com/org/fleet-gitops.git"
 export GIT_TERMINAL_PROMPT=0
 ```
 
@@ -315,7 +345,7 @@ export GIT_TERMINAL_PROMPT=0
 
 # Validate all components
 python3 -m py_compile FleetImporter/FleetImporter.py
-python3 -c "import yaml; [yaml.safe_load(open(f)) for f in ['Google/GoogleChrome.fleet.recipe.yaml', 'GitHub/GithubDesktop.fleet.recipe.yaml']]"
+python3 -c "import yaml; [yaml.safe_load(open(f)) for f in ['GitHub/GithubDesktop.fleet.direct.recipe.yaml', 'GitHub/GithubDesktop.fleet.gitops.recipe.yaml']]"
 git status && git log --oneline -5
 ```
 
