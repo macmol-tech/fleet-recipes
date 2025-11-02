@@ -119,7 +119,7 @@ Process:
 
 ### Optional Recipe Arguments
 
-All optional arguments from Direct Mode, plus:
+All [optional arguments](#optional-recipe-arguments) from Direct Mode, plus:
 
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
