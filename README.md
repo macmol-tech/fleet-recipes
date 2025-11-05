@@ -60,11 +60,23 @@ Process:
 | `categories` | array | `[]` | Categories (Browsers, Communication, Developer tools, Productivity) |
 | `labels_include_any` | array | `[]` | Only install on devices with these labels |
 | `labels_exclude_any` | array | `[]` | Exclude devices with these labels |
-| `icon` | string | - | Path to PNG icon (square, 120-1024px) |
+| `icon` | string | - | Path to PNG icon (square, 120-1024px, max 100KB). If not provided, automatically extracts from app bundle. |
+| `skip_icon_extraction` | boolean | `false` | Skip automatic icon extraction from app bundle |
 | `install_script` | string | - | Custom installation script |
 | `uninstall_script` | string | - | Custom uninstall script |
 | `pre_install_query` | string | - | osquery to run before install |
 | `post_install_script` | string | - | Script to run after install |
+
+### Automatic icon extraction
+
+FleetImporter automatically extracts and uploads application icons from `.pkg` files without requiring manual icon files:
+
+- **Automatic extraction**: Finds the `.app` bundle in the package, extracts the icon from `Info.plist`, and converts it to PNG format
+- **Size optimization**: Automatically compresses icons that exceed Fleet's 100 KB limit by resizing to 512px, 256px, or 128px
+- **Format conversion**: Converts macOS `.icns` files to PNG format using the built-in `sips` tool
+- **Fallback**: If extraction fails, continues without an icon (or uses manual `icon` path if provided)
+- **Override**: Specify `icon: path/to/icon.png` in your recipe to use a custom icon instead of auto-extraction
+- **Disable**: Set `skip_icon_extraction: true` to skip automatic extraction entirely
 
 ---
 

@@ -194,7 +194,12 @@ class FleetImporter(Processor):
         "icon": {
             "required": False,
             "default": "",
-            "description": "Path to PNG icon file (square, 120x120 to 1024x1024 px) to upload to Fleet.",
+            "description": "Path to PNG icon file (square, 120x120 to 1024x1024 px) to upload to Fleet. If not provided, will attempt to extract icon from app bundle automatically.",
+        },
+        "skip_icon_extraction": {
+            "required": False,
+            "default": False,
+            "description": "Skip automatic icon extraction from app bundle. Default: False",
         },
         "pre_install_query": {
             "required": False,
@@ -355,7 +360,12 @@ class FleetImporter(Processor):
 
         # Upload icon if provided
         icon_path_str = self.env.get("icon", "").strip()
+        skip_icon_extraction = bool(self.env.get("skip_icon_extraction", False))
+
+        extracted_icon_path = None  # Track if we need to clean up
+
         if icon_path_str and title_id:
+            # Manual icon path provided - use it
             # Try to resolve icon path relative to recipe directory first
             icon_path = Path(icon_path_str)
             if not icon_path.is_absolute():
@@ -367,8 +377,9 @@ class FleetImporter(Processor):
                     icon_path = icon_path.expanduser().resolve()
             else:
                 icon_path = icon_path.expanduser().resolve()
+
             if icon_path.exists():
-                self.output(f"Icon file specified: {icon_path}")
+                self.output(f"Using manual icon file: {icon_path}")
                 self._fleet_upload_icon(
                     fleet_api_base,
                     fleet_token,
@@ -379,6 +390,29 @@ class FleetImporter(Processor):
             else:
                 self.output(
                     f"Warning: Icon file not found: {icon_path}. Skipping icon upload."
+                )
+        elif title_id and not skip_icon_extraction:
+            # No manual icon - try to extract from package automatically
+            self.output("Attempting to extract icon from package automatically...")
+            extracted_icon_path = self._extract_icon_from_pkg(pkg_path)
+
+            if extracted_icon_path and extracted_icon_path.exists():
+                self.output(f"Successfully extracted icon: {extracted_icon_path.name}")
+                try:
+                    self._fleet_upload_icon(
+                        fleet_api_base,
+                        fleet_token,
+                        title_id,
+                        team_id,
+                        extracted_icon_path,
+                    )
+                finally:
+                    # Clean up extracted icon temp directory
+                    if extracted_icon_path.parent.exists():
+                        shutil.rmtree(extracted_icon_path.parent, ignore_errors=True)
+            else:
+                self.output(
+                    "Could not extract icon from package. Skipping icon upload."
                 )
 
     def _run_gitops_workflow(self):
@@ -430,16 +464,37 @@ class FleetImporter(Processor):
         # Clone GitOps repository first (fail early if this doesn't work)
         self.output(f"Cloning GitOps repository: {gitops_repo_url}")
         temp_dir = None
+        extracted_icon_path = None  # Track extracted icon for cleanup
         try:
             temp_dir = self._clone_gitops_repo(gitops_repo_url, github_token)
             self.output(f"Repository cloned to: {temp_dir}")
 
-            # Copy icon to GitOps repo if provided
+            # Handle icon - either from manual path or auto-extraction
             icon_relative_path = None
+            skip_icon_extraction = bool(self.env.get("skip_icon_extraction", False))
+
             if icon_path_str:
+                # Manual icon path provided
                 icon_relative_path = self._copy_icon_to_gitops_repo(
                     temp_dir, icon_path_str, software_title
                 )
+            elif not skip_icon_extraction:
+                # Try to extract icon from package automatically
+                self.output("Attempting to extract icon from package automatically...")
+                extracted_icon_path = self._extract_icon_from_pkg(pkg_path)
+
+                if extracted_icon_path and extracted_icon_path.exists():
+                    self.output(
+                        f"Successfully extracted icon: {extracted_icon_path.name}"
+                    )
+                    # Copy extracted icon to GitOps repo
+                    icon_relative_path = self._copy_icon_to_gitops_repo(
+                        temp_dir, str(extracted_icon_path), software_title
+                    )
+                else:
+                    self.output(
+                        "Could not extract icon from package. Skipping icon in GitOps."
+                    )
 
             # Upload package to S3
             self.output(f"Uploading package to S3 bucket: {aws_s3_bucket}")
@@ -542,6 +597,9 @@ class FleetImporter(Processor):
                 )
             raise ProcessorError(f"GitOps workflow failed: {e}")
         finally:
+            # Clean up extracted icon temp directory
+            if extracted_icon_path and extracted_icon_path.parent.exists():
+                shutil.rmtree(extracted_icon_path.parent, ignore_errors=True)
             # Always clean up temporary directory
             if temp_dir and Path(temp_dir).exists():
                 self.output(f"Cleaning up temporary directory: {temp_dir}")
@@ -562,6 +620,232 @@ class FleetImporter(Processor):
         slug = re.sub(r"[^a-z0-9]+", "-", text.lower())
         # Remove leading/trailing hyphens
         return slug.strip("-")
+
+    def _extract_icon_from_pkg(self, pkg_path: Path) -> Path | None:
+        """Extract and convert app icon from a package to PNG format.
+
+        Args:
+            pkg_path: Path to .pkg file
+
+        Returns:
+            Path to extracted PNG icon file in temp directory, or None if extraction fails
+
+        Raises:
+            ProcessorError: If icon extraction fails critically
+        """
+        try:
+            # Create temporary directory for extraction
+            temp_dir = Path(tempfile.mkdtemp(prefix="fleetimporter-icon-"))
+
+            # First, expand the pkg to find the app bundle
+            pkg_expand_dir = temp_dir / "pkg_contents"
+            pkg_expand_dir.mkdir()
+
+            self.output(f"Expanding package to find app bundle: {pkg_path.name}")
+            result = subprocess.run(
+                ["pkgutil", "--expand", str(pkg_path), str(pkg_expand_dir)],
+                capture_output=True,
+                text=True,
+            )
+
+            if result.returncode != 0:
+                self.output(
+                    f"Warning: Could not expand package: {result.stderr}. Skipping icon extraction."
+                )
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return None
+
+            # Find .app bundles within the expanded package
+            app_bundles = list(pkg_expand_dir.rglob("*.app"))
+            if not app_bundles:
+                self.output(
+                    "Warning: No .app bundle found in package. Skipping icon extraction."
+                )
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return None
+
+            # Use the first app bundle found
+            app_bundle = app_bundles[0]
+            self.output(f"Found app bundle: {app_bundle.name}")
+
+            # Extract icon using the _extract_icon_from_app helper
+            icon_path = self._extract_icon_from_app(app_bundle, temp_dir)
+
+            if icon_path and icon_path.exists():
+                # Verify the icon meets size requirements
+                icon_size_bytes = icon_path.stat().st_size
+                icon_size_kb = icon_size_bytes / 1024
+
+                if icon_size_bytes > 100 * 1024:  # 100KB limit
+                    self.output(
+                        f"Warning: Extracted icon is {icon_size_kb:.1f} KB, which exceeds Fleet's 100 KB limit. "
+                        f"Attempting to compress..."
+                    )
+                    # Try to compress the icon
+                    compressed_icon = self._compress_icon(icon_path, temp_dir)
+                    if compressed_icon:
+                        icon_path = compressed_icon
+                        icon_size_kb = icon_path.stat().st_size / 1024
+                        self.output(
+                            f"Compressed icon to {icon_size_kb:.1f} KB successfully"
+                        )
+                    else:
+                        self.output(
+                            "Warning: Could not compress icon below 100 KB. Skipping icon upload."
+                        )
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                        return None
+
+                self.output(
+                    f"Successfully extracted icon: {icon_path.name} ({icon_size_kb:.1f} KB)"
+                )
+                return icon_path
+            else:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return None
+
+        except Exception as e:
+            self.output(
+                f"Warning: Icon extraction failed with error: {e}. Skipping icon extraction."
+            )
+            if temp_dir and temp_dir.exists():
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            return None
+
+    def _extract_icon_from_app(self, app_bundle: Path, temp_dir: Path) -> Path | None:
+        """Extract icon from an .app bundle and convert to PNG.
+
+        Args:
+            app_bundle: Path to .app bundle
+            temp_dir: Temporary directory for output
+
+        Returns:
+            Path to PNG icon file, or None if extraction fails
+        """
+        try:
+            # Read Info.plist to find icon file name
+            info_plist = app_bundle / "Contents" / "Info.plist"
+            if not info_plist.exists():
+                self.output(f"Warning: Info.plist not found in {app_bundle.name}")
+                return None
+
+            # Use plutil to read icon file name
+            result = subprocess.run(
+                ["plutil", "-extract", "CFBundleIconFile", "raw", str(info_plist)],
+                capture_output=True,
+                text=True,
+            )
+
+            if result.returncode != 0:
+                self.output(
+                    f"Warning: Could not read CFBundleIconFile from Info.plist: {result.stderr}"
+                )
+                return None
+
+            icon_name = result.stdout.strip()
+            if not icon_name:
+                self.output("Warning: CFBundleIconFile is empty in Info.plist")
+                return None
+
+            # Add .icns extension if not present
+            if not icon_name.endswith(".icns"):
+                icon_name += ".icns"
+
+            # Find the icon file in the app bundle
+            icon_file = app_bundle / "Contents" / "Resources" / icon_name
+            if not icon_file.exists():
+                # Try without extension
+                icon_name_no_ext = icon_name.replace(".icns", "")
+                icon_file = (
+                    app_bundle / "Contents" / "Resources" / f"{icon_name_no_ext}.icns"
+                )
+
+            if not icon_file.exists():
+                self.output(
+                    f"Warning: Icon file not found: {icon_name} in {app_bundle.name}"
+                )
+                return None
+
+            self.output(f"Found icon file: {icon_file.name}")
+
+            # Convert .icns to PNG using sips (macOS built-in tool)
+            output_png = temp_dir / "icon.png"
+            result = subprocess.run(
+                [
+                    "sips",
+                    "-s",
+                    "format",
+                    "png",
+                    str(icon_file),
+                    "--out",
+                    str(output_png),
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            if result.returncode != 0:
+                self.output(f"Warning: Could not convert icon to PNG: {result.stderr}")
+                return None
+
+            if not output_png.exists():
+                self.output("Warning: PNG conversion produced no output file")
+                return None
+
+            return output_png
+
+        except Exception as e:
+            self.output(f"Warning: Icon extraction from app bundle failed: {e}")
+            return None
+
+    def _compress_icon(self, icon_path: Path, temp_dir: Path) -> Path | None:
+        """Compress a PNG icon to meet Fleet's 100 KB size limit.
+
+        Uses sips to resize the icon progressively until it's under 100 KB.
+
+        Args:
+            icon_path: Path to original PNG icon
+            temp_dir: Temporary directory for output
+
+        Returns:
+            Path to compressed PNG icon, or None if compression fails
+        """
+        try:
+            # Try progressively smaller sizes: 512, 256, 128
+            for size in [512, 256, 128]:
+                compressed_path = temp_dir / f"icon_compressed_{size}.png"
+
+                result = subprocess.run(
+                    [
+                        "sips",
+                        "-Z",
+                        str(size),
+                        str(icon_path),
+                        "--out",
+                        str(compressed_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+
+                if result.returncode != 0:
+                    continue
+
+                if compressed_path.exists():
+                    compressed_size = compressed_path.stat().st_size
+                    if compressed_size <= 100 * 1024:  # Under 100 KB
+                        self.output(
+                            f"Compressed icon to {size}x{size}px ({compressed_size / 1024:.1f} KB)"
+                        )
+                        return compressed_path
+
+            # If we get here, even 128px was too large - this is unusual
+            self.output("Warning: Could not compress icon below 100 KB even at 128px")
+            return None
+
+        except Exception as e:
+            self.output(f"Warning: Icon compression failed: {e}")
+            return None
 
     def _get_aws_credentials(self) -> tuple[str, str, str]:
         """Get AWS credentials from processor environment.

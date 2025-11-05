@@ -4,6 +4,22 @@ This repository contains AutoPkg processors and recipes for Fleet device managem
 
 Always reference these instructions first and fallback to search or bash commands only when you encounter unexpected information that does not match the info here.
 
+## Communication Style
+
+### Git Commit Messages and Pull Requests
+- **NEVER use emojis** in commit messages or PR descriptions
+- Use clear, professional language
+- Focus on technical details and implementation specifics
+- When creating PRs, always use `gh pr create --web` to open the browser for final review
+
+### PR Creation Workflow
+1. Create feature branch: `git checkout -b feature-name`
+2. Stage changes: `git add <files>`
+3. Commit with clear message (no emojis): `git commit -m "Description"`
+4. Push branch: `git push -u origin feature-name`
+5. Create PR with `--web` flag: `gh pr create --title "Title" --body "Description" --web`
+6. The `--web` flag opens the browser for final review before submission
+
 ## Working Effectively
 
 ### Bootstrap and Setup (macOS required for AutoPkg)
@@ -175,16 +191,28 @@ Process:
 ```
 
 ### Icon Support
-The FleetImporter processor supports uploading custom icons for software packages in Fleet:
-- **Format**: PNG only
-- **Size**: Square dimensions between 120x120 px and 1024x1024 px
-- **Usage**: Add `icon: IconFilename.png` to recipe Arguments
-- **Path**: Relative to recipe file directory or absolute path
+The FleetImporter processor automatically extracts and uploads application icons from `.pkg` files:
+- **Automatic Extraction**: Extracts icons from `.app` bundles inside packages automatically
+- **Format**: PNG (automatically converted from macOS `.icns` format)
+- **Size Limit**: Maximum 100 KB (Fleet requirement)
+- **Size Optimization**: Automatically compresses large icons by resizing to 512px, 256px, or 128px
+- **Manual Override**: Add `icon: IconFilename.png` to recipe Arguments to use a custom icon instead
+- **Skip Extraction**: Set `skip_icon_extraction: true` to disable automatic extraction
+- **Path**: Manual icon paths are relative to recipe file directory or absolute
 - **API**: Uses Fleet's `PUT /api/v1/fleet/software/titles/:id/icon` endpoint
-- **Timing**: Icon is uploaded immediately after package upload (direct mode only)
-- **GitOps**: Icon support for GitOps mode not yet implemented
+- **Timing**: Icon is uploaded immediately after package upload (both direct and GitOps modes)
+- **GitOps**: Icons are copied to `lib/icons/` directory in GitOps repository with relative path references
 
-Example:
+**How automatic extraction works:**
+1. Expands the `.pkg` file using `pkgutil --expand`
+2. Finds the `.app` bundle within the package
+3. Reads `CFBundleIconFile` from `Info.plist`
+4. Locates the `.icns` file in `Contents/Resources/`
+5. Converts to PNG using macOS `sips` tool
+6. Compresses if needed to meet 100 KB limit
+7. Uploads to Fleet or copies to GitOps repo
+
+**Example with automatic icon extraction (recommended):**
 ```yaml
 Process:
 - Arguments:
@@ -195,7 +223,22 @@ Process:
     fleet_api_token: "%FLEET_API_TOKEN%"
     team_id: "%FLEET_TEAM_ID%"
     self_service: true
-    icon: GoogleChrome.png  # Optional icon file
+    # No icon parameter - will auto-extract from package
+  Processor: com.github.fleet.FleetImporter/FleetImporter
+```
+
+**Example with manual icon override:**
+```yaml
+Process:
+- Arguments:
+    pkg_path: "%pkg_path%"
+    software_title: "%NAME%"
+    version: "%version%"
+    fleet_api_base: "%FLEET_API_BASE%"
+    fleet_api_token: "%FLEET_API_TOKEN%"
+    team_id: "%FLEET_TEAM_ID%"
+    self_service: true
+    icon: CustomIcon.png  # Use custom icon instead of auto-extraction
   Processor: com.github.fleet.FleetImporter/FleetImporter
 ```
 
