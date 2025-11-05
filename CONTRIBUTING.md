@@ -35,7 +35,7 @@ See the existing recipes in this repository for examples (Claude, Caffeine, GitH
   - Communication
   - Developer tools
   - Productivity
-- Add an icon file (PNG, square, 120-1024px) if available
+- Use automatic icon extraction (default behavior, no action needed)
 - Use consistent formatting with existing recipes
 - Reference an existing AutoPkg parent recipe that produces a `.pkg` file
 
@@ -46,8 +46,7 @@ Place recipes in a folder named after the software vendor:
 ```
 VendorName/
 ├── SoftwareName.fleet.recipe.yaml
-├── SoftwareName.fleet.gitops.recipe.yaml
-└── SoftwareName.png (optional)
+└── SoftwareName.fleet.gitops.recipe.yaml
 ```
 
 ## Style Guide
@@ -66,7 +65,7 @@ Where `<SoftwareName>` matches the `NAME` input variable used throughout the rec
 
 Each recipe resides in a subfolder named after the software vendor or publisher:
 - Use the official company/vendor name (e.g., `GitHub`, `Anthropic`, `Signal`)
-- Support files (icons, scripts) should use the software name as a prefix
+- Manual icon files (rarely needed) should use the software name as a prefix
 - No spaces in folder names; use proper capitalization
 
 ### Parent Recipe
@@ -111,12 +110,20 @@ Use only these supported Fleet categories:
 
 ### Icons
 
-If including an icon:
+Recipes should use automatic icon extraction (the default behavior):
+- FleetImporter automatically extracts icons from .pkg files
+- No manual icon file needed in most cases
+- Icons are extracted from the .app bundle, converted to PNG, and compressed to meet Fleet's 100 KB limit
+
+Only include a manual icon file if automatic extraction is not technically possible:
 - Must be PNG format
 - Square dimensions between 120x120px and 1024x1024px
 - Less than 100KB filesize (Fleet requirement)
 - Named `<SoftwareName>.png`
 - Referenced in recipe as `icon: <SoftwareName>.png`
+
+To disable automatic extraction (rare cases only):
+- Add `skip_icon_extraction: true` to recipe arguments
 
 ### YAML Formatting
 
