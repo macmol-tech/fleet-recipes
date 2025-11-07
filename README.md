@@ -1,6 +1,6 @@
 # fleet-recipes
 
-A community repo of AutoPkg recipes for uploading macOS installer packages to Fleet.
+A community-maintained repo of AutoPkg recipes for uploading macOS installer packages to Fleet. Contributions are welcome!
 
 ## Getting started
 
