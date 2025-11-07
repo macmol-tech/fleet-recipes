@@ -245,29 +245,35 @@ class FleetImporter(Processor):
         """Create an SSL context using certifi's CA bundle."""
         return ssl.create_default_context(cafile=certifi.where())
 
-    def _build_version_query(self, software_title: str, version: str) -> str:
+    def _build_version_query(self, bundle_id: str, version: str) -> str:
         """Build osquery query to detect outdated software versions.
         
-        Uses the 'programs' table which contains:
-        - name (TEXT): Package display name
-        - version (TEXT): Package-supplied version
+        Uses the 'apps' table which contains:
+        - bundle_identifier (TEXT): App bundle ID
+        - bundle_short_version (TEXT): App version
+        
+        The query uses version_compare() function for semantic version comparison.
         
         Args:
-            software_title: Software title to query
+            bundle_id: App bundle identifier (e.g., com.github.GitHubClient)
             version: Current version to check against
             
         Returns:
             osquery SQL query string
         """
         # Sanitize inputs for SQL query (escape single quotes)
-        safe_name = software_title.replace("'", "''")
+        safe_bundle_id = bundle_id.replace("'", "''")
         safe_version = version.replace("'", "''")
         
-        # Build query targeting outdated versions
+        # Build query using apps table and version_compare for semantic versioning
+        # Returns 1 (policy fails) if any host has outdated version
+        # version_compare returns: -1 if a < b, 0 if a == b, 1 if a > b
+        # We want to fail if version < required (version_compare(...) < 0)
         query = (
-            f"SELECT * FROM programs "
-            f"WHERE name = '{safe_name}' "
-            f"AND version != '{safe_version}'"
+            f"SELECT 1 WHERE EXISTS (\n"
+            f"  SELECT 1 FROM apps WHERE bundle_identifier = '{safe_bundle_id}' "
+            f"AND version_compare(bundle_short_version, '{safe_version}') < 0\n"
+            f");"
         )
         
         return query
@@ -344,6 +350,7 @@ class FleetImporter(Processor):
         software_title: str,
         version: str,
         hash_sha256: str,
+        pkg_path: str,
     ):
         """Create or update auto-update policy via Fleet API.
         
@@ -354,13 +361,22 @@ class FleetImporter(Processor):
             software_title: Software title
             version: Software version
             hash_sha256: SHA256 hash of package for linking
+            pkg_path: Path to package file for bundle ID extraction
         """
+        # Extract bundle ID from package
+        bundle_id = self._extract_bundle_id_from_pkg(Path(pkg_path))
+        if not bundle_id:
+            self.output(
+                f"Warning: Could not extract bundle ID from package. Skipping auto-update policy creation."
+            )
+            return
+        
         # Build policy name
         policy_name = self._format_policy_name(software_title)
         self.output(f"Auto-update policy name: {policy_name}")
         
-        # Build version detection query
-        query = self._build_version_query(software_title, version)
+        # Build version detection query using bundle ID
+        query = self._build_version_query(bundle_id, version)
         self.output(f"Auto-update policy query: {query}")
         
         # Check if policy already exists
@@ -447,6 +463,7 @@ class FleetImporter(Processor):
         software_title: str,
         version: str,
         hash_sha256: str,
+        pkg_path: str,
     ):
         """Create or update auto-update policy in GitOps repository.
         
@@ -455,13 +472,22 @@ class FleetImporter(Processor):
             software_title: Software title
             version: Software version
             hash_sha256: SHA256 hash of package for linking
+            pkg_path: Path to package file for bundle ID extraction
         """
+        # Extract bundle ID from package
+        bundle_id = self._extract_bundle_id_from_pkg(Path(pkg_path))
+        if not bundle_id:
+            self.output(
+                f"Warning: Could not extract bundle ID from package. Skipping auto-update policy creation."
+            )
+            return None
+        
         # Build policy name
         policy_name = self._format_policy_name(software_title)
         self.output(f"Auto-update policy name: {policy_name}")
         
-        # Build version detection query
-        query = self._build_version_query(software_title, version)
+        # Build version detection query using bundle ID
+        query = self._build_version_query(bundle_id, version)
         self.output(f"Auto-update policy query: {query}")
         
         # Create policy YAML structure
@@ -705,6 +731,7 @@ class FleetImporter(Processor):
                     software_title,
                     version,
                     hash_sha256,
+                    pkg_path,
                 )
             except Exception as e:
                 # Log warning but don't fail the entire workflow
@@ -892,6 +919,7 @@ class FleetImporter(Processor):
                         software_title,
                         version,
                         hash_sha256,
+                        pkg_path,
                     )
                 except Exception as e:
                     # Log warning but don't fail the entire workflow
@@ -1184,6 +1212,94 @@ class FleetImporter(Processor):
 
         except Exception as e:
             self.output(f"Warning: Icon compression failed: {e}")
+            return None
+
+    def _extract_bundle_id_from_pkg(self, pkg_path: Path) -> str | None:
+        """Extract bundle identifier from a package file.
+
+        Args:
+            pkg_path: Path to .pkg file
+
+        Returns:
+            Bundle identifier string, or None if extraction fails
+        """
+        try:
+            # Create temporary directory for extraction
+            temp_dir = Path(tempfile.mkdtemp(prefix="fleetimporter-bundleid-"))
+
+            # Expand the pkg to find the app bundle
+            pkg_expand_dir = temp_dir / "pkg_contents"
+            pkg_expand_dir.mkdir()
+
+            self.output(f"Extracting bundle ID from package: {pkg_path.name}")
+            result = subprocess.run(
+                ["pkgutil", "--expand", str(pkg_path), str(pkg_expand_dir)],
+                capture_output=True,
+                text=True,
+            )
+
+            if result.returncode != 0:
+                self.output(
+                    f"Warning: Could not expand package for bundle ID extraction: {result.stderr}"
+                )
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return None
+
+            # Find .app bundles within the expanded package
+            app_bundles = list(pkg_expand_dir.rglob("*.app"))
+            if not app_bundles:
+                self.output(
+                    "Warning: No .app bundle found in package for bundle ID extraction."
+                )
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return None
+
+            # Use the first app bundle found
+            app_bundle = app_bundles[0]
+            info_plist = app_bundle / "Contents" / "Info.plist"
+
+            if not info_plist.exists():
+                self.output(
+                    f"Warning: Info.plist not found in {app_bundle.name}"
+                )
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return None
+
+            # Extract CFBundleIdentifier using PlistBuddy
+            result = subprocess.run(
+                [
+                    "/usr/libexec/PlistBuddy",
+                    "-c",
+                    "Print :CFBundleIdentifier",
+                    str(info_plist),
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            # Clean up temp directory
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+            if result.returncode != 0:
+                self.output(
+                    f"Warning: Could not read CFBundleIdentifier from Info.plist: {result.stderr}"
+                )
+                return None
+
+            bundle_id = result.stdout.strip()
+            if not bundle_id:
+                self.output("Warning: CFBundleIdentifier is empty in Info.plist")
+                return None
+
+            self.output(f"Extracted bundle identifier: {bundle_id}")
+            return bundle_id
+
+        except Exception as e:
+            self.output(
+                f"Warning: Bundle ID extraction failed with error: {e}"
+            )
+            if temp_dir and temp_dir.exists():
+                shutil.rmtree(temp_dir, ignore_errors=True)
             return None
 
     def _get_aws_credentials(self) -> tuple[str, str, str]:

@@ -41,16 +41,22 @@ def format_policy_name(template, software_title):
     return template.replace("%NAME%", slug)
 
 
-def build_version_query(software_title, version):
+def build_version_query(bundle_id, version):
     """
     Build osquery SQL query to detect outdated software versions.
     Replicated from FleetImporter._build_version_query()
     """
     # Escape single quotes to prevent SQL injection
-    escaped_title = software_title.replace("'", "''")
-    escaped_version = version.replace("'", "''")
+    safe_bundle_id = bundle_id.replace("'", "''")
+    safe_version = version.replace("'", "''")
 
-    query = f"SELECT * FROM programs WHERE name = '{escaped_title}' AND version != '{escaped_version}'"
+    # Build query using apps table and version_compare for semantic versioning
+    query = (
+        f"SELECT 1 WHERE EXISTS (\n"
+        f"  SELECT 1 FROM apps WHERE bundle_identifier = '{safe_bundle_id}' "
+        f"AND version_compare(bundle_short_version, '{safe_version}') < 0\n"
+        f");"
+    )
     return query
 
 
@@ -99,54 +105,79 @@ class TestAutoUpdateQueryBuilder(unittest.TestCase):
 
     def test_build_version_query_basic(self):
         """Test basic version query building."""
-        query = build_version_query("GitHub Desktop", "3.3.12")
+        query = build_version_query("com.github.GitHubClient", "3.3.12")
         expected = (
-            "SELECT * FROM programs WHERE name = 'GitHub Desktop' AND version != '3.3.12'"
+            "SELECT 1 WHERE EXISTS (\n"
+            "  SELECT 1 FROM apps WHERE bundle_identifier = 'com.github.GitHubClient' "
+            "AND version_compare(bundle_short_version, '3.3.12') < 0\n"
+            ");"
         )
         self.assertEqual(query, expected)
 
     def test_build_version_query_single_quotes(self):
-        """Test query building with single quotes in software name (SQL injection prevention)."""
-        query = build_version_query("O'Reilly Software", "1.0.0")
+        """Test query building with single quotes in bundle ID (SQL injection prevention)."""
+        query = build_version_query("com.oreilly'.malicious", "1.0.0")
         expected = (
-            "SELECT * FROM programs WHERE name = 'O''Reilly Software' AND version != '1.0.0'"
+            "SELECT 1 WHERE EXISTS (\n"
+            "  SELECT 1 FROM apps WHERE bundle_identifier = 'com.oreilly''.malicious' "
+            "AND version_compare(bundle_short_version, '1.0.0') < 0\n"
+            ");"
         )
         self.assertEqual(query, expected)
 
     def test_build_version_query_multiple_quotes(self):
         """Test query building with multiple single quotes."""
-        query = build_version_query("Bob's 'Great' App", "2.0.0")
+        query = build_version_query("com.test'app'id", "2.0.0")
         expected = (
-            "SELECT * FROM programs WHERE name = 'Bob''s ''Great'' App' AND version != '2.0.0'"
+            "SELECT 1 WHERE EXISTS (\n"
+            "  SELECT 1 FROM apps WHERE bundle_identifier = 'com.test''app''id' "
+            "AND version_compare(bundle_short_version, '2.0.0') < 0\n"
+            ");"
         )
         self.assertEqual(query, expected)
 
     def test_build_version_query_version_with_build(self):
         """Test query with version containing build numbers."""
-        query = build_version_query("Visual Studio Code", "1.85.2.123")
+        query = build_version_query("com.microsoft.VSCode", "1.85.2.123")
         expected = (
-            "SELECT * FROM programs WHERE name = 'Visual Studio Code' AND version != '1.85.2.123'"
+            "SELECT 1 WHERE EXISTS (\n"
+            "  SELECT 1 FROM apps WHERE bundle_identifier = 'com.microsoft.VSCode' "
+            "AND version_compare(bundle_short_version, '1.85.2.123') < 0\n"
+            ");"
         )
         self.assertEqual(query, expected)
 
     def test_build_version_query_special_chars_in_version(self):
         """Test query with special characters in version."""
-        query = build_version_query("Test App", "1.0.0-beta+123")
+        query = build_version_query("com.test.app", "1.0.0-beta+123")
         expected = (
-            "SELECT * FROM programs WHERE name = 'Test App' AND version != '1.0.0-beta+123'"
+            "SELECT 1 WHERE EXISTS (\n"
+            "  SELECT 1 FROM apps WHERE bundle_identifier = 'com.test.app' "
+            "AND version_compare(bundle_short_version, '1.0.0-beta+123') < 0\n"
+            ");"
         )
         self.assertEqual(query, expected)
 
     def test_build_version_query_empty_values(self):
         """Test query building with empty values."""
         query = build_version_query("", "")
-        expected = "SELECT * FROM programs WHERE name = '' AND version != ''"
+        expected = (
+            "SELECT 1 WHERE EXISTS (\n"
+            "  SELECT 1 FROM apps WHERE bundle_identifier = '' "
+            "AND version_compare(bundle_short_version, '') < 0\n"
+            ");"
+        )
         self.assertEqual(query, expected)
 
     def test_build_version_query_unicode(self):
         """Test query building with unicode characters."""
-        query = build_version_query("Café App™", "1.0.0")
-        expected = "SELECT * FROM programs WHERE name = 'Café App™' AND version != '1.0.0'"
+        query = build_version_query("com.café.app™", "1.0.0")
+        expected = (
+            "SELECT 1 WHERE EXISTS (\n"
+            "  SELECT 1 FROM apps WHERE bundle_identifier = 'com.café.app™' "
+            "AND version_compare(bundle_short_version, '1.0.0') < 0\n"
+            ");"
+        )
         self.assertEqual(query, expected)
 
 
@@ -157,7 +188,7 @@ class TestAutoUpdatePolicyPayload(unittest.TestCase):
         """Test that policy payload has all required fields."""
         # Simulate what would be created in _create_or_update_policy_direct
         policy_name = format_policy_name("autopkg-auto-update-%NAME%", "GitHub Desktop")
-        query = build_version_query("GitHub Desktop", "3.3.12")
+        query = build_version_query("com.github.GitHubClient", "3.3.12")
 
         # Expected payload structure
         payload = {
@@ -188,9 +219,9 @@ class TestAutoUpdatePolicyPayload(unittest.TestCase):
 
         # Verify content
         self.assertEqual(payload["name"], "autopkg-auto-update-github-desktop")
-        self.assertIn("GitHub Desktop", payload["query"])
+        self.assertIn("com.github.GitHubClient", payload["query"])
         self.assertIn("3.3.12", payload["query"])
-        self.assertIn("version != ", payload["query"])
+        self.assertIn("version_compare", payload["query"])
 
 
 class TestAutoUpdateSQLInjectionPrevention(unittest.TestCase):
@@ -198,49 +229,49 @@ class TestAutoUpdateSQLInjectionPrevention(unittest.TestCase):
 
     def test_prevent_sql_injection_or_clause(self):
         """Test that SQL OR injection attempts are properly escaped."""
-        malicious_name = "App' OR '1'='1"
-        query = build_version_query(malicious_name, "1.0.0")
+        malicious_bundle_id = "com.app' OR '1'='1"
+        query = build_version_query(malicious_bundle_id, "1.0.0")
 
         # Should escape the single quote, making it safe
-        self.assertIn("App'' OR ''1''=''1", query)
+        self.assertIn("com.app'' OR ''1''=''1", query)
         # Should NOT contain unescaped OR that would execute
         self.assertNotIn("' OR '1'='1", query)
 
     def test_prevent_sql_injection_comment(self):
         """Test that SQL comment injection attempts are properly escaped."""
-        malicious_name = "App' -- comment"
-        query = build_version_query(malicious_name, "1.0.0")
+        malicious_bundle_id = "com.app' -- comment"
+        query = build_version_query(malicious_bundle_id, "1.0.0")
 
         # Should escape the single quote
-        self.assertIn("App'' -- comment", query)
+        self.assertIn("com.app'' -- comment", query)
         # Query should remain valid
-        self.assertTrue(query.startswith("SELECT * FROM programs WHERE"))
+        self.assertTrue(query.startswith("SELECT 1 WHERE EXISTS"))
 
     def test_prevent_sql_injection_union(self):
         """Test that SQL UNION injection attempts are properly escaped."""
-        malicious_name = "App' UNION SELECT * FROM users --"
-        query = build_version_query(malicious_name, "1.0.0")
+        malicious_bundle_id = "com.app' UNION SELECT * FROM users --"
+        query = build_version_query(malicious_bundle_id, "1.0.0")
 
         # Should escape the single quote, neutralizing the injection
-        self.assertIn("App'' UNION SELECT * FROM users --", query)
+        self.assertIn("com.app'' UNION SELECT * FROM users --", query)
 
     def test_prevent_sql_injection_drop_table(self):
         """Test that DROP TABLE injection attempts are properly escaped."""
-        malicious_version = "1.0.0'; DROP TABLE programs; --"
-        query = build_version_query("Test App", malicious_version)
+        malicious_version = "1.0.0'; DROP TABLE apps; --"
+        query = build_version_query("com.test.app", malicious_version)
 
         # Should escape the single quote
-        self.assertIn("1.0.0''; DROP TABLE programs; --", query)
+        self.assertIn("1.0.0''; DROP TABLE apps; --", query)
 
     def test_multiple_injection_attempts(self):
         """Test multiple injection attempts in same query."""
-        malicious_name = "App' OR '1'='1' --"
-        malicious_version = "1.0'; DROP TABLE programs; --"
-        query = build_version_query(malicious_name, malicious_version)
+        malicious_bundle_id = "com.app' OR '1'='1' --"
+        malicious_version = "1.0'; DROP TABLE apps; --"
+        query = build_version_query(malicious_bundle_id, malicious_version)
 
         # All single quotes should be escaped
         count_single_quotes = query.count("''")
-        # Should have escaped quotes for both name and version
+        # Should have escaped quotes for both bundle_id and version
         self.assertGreater(count_single_quotes, 0)
 
 
@@ -257,17 +288,17 @@ class TestAutoUpdateEdgeCases(unittest.TestCase):
         result = format_policy_name("autopkg-auto-update-%NAME%", "")
         self.assertEqual(result, "autopkg-auto-update-")
 
-    def test_build_query_long_software_name(self):
-        """Test query building with very long software name."""
-        long_name = "A" * 500
-        query = build_version_query(long_name, "1.0.0")
-        self.assertIn(long_name, query)
-        self.assertTrue(query.startswith("SELECT * FROM programs WHERE"))
+    def test_build_query_long_bundle_id(self):
+        """Test query building with very long bundle ID."""
+        long_bundle_id = "com." + "a" * 500
+        query = build_version_query(long_bundle_id, "1.0.0")
+        self.assertIn(long_bundle_id, query)
+        self.assertTrue(query.startswith("SELECT 1 WHERE EXISTS"))
 
     def test_build_query_long_version(self):
         """Test query building with very long version string."""
         long_version = "1." + "0" * 500
-        query = build_version_query("Test App", long_version)
+        query = build_version_query("com.test.app", long_version)
         self.assertIn(long_version, query)
 
     def test_format_policy_name_only_special_chars(self):

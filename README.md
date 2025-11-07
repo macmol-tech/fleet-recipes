@@ -177,7 +177,7 @@ When `AUTO_UPDATE_ENABLED` is set to `true`, FleetImporter:
 1. **Builds version query**: Creates an osquery SQL query that detects hosts running outdated versions:
    ```sql
    SELECT 1 WHERE EXISTS (
-     SELECT 1 FROM apps WHERE bundle_identifier = '<YOUR_APP_BUNDLE_ID>' AND version_compare(bundle_short_version, '<REQUIRED_VERSION>') >= 0
+     SELECT 1 FROM apps WHERE bundle_identifier = '<YOUR_APP_BUNDLE_ID>' AND version_compare(bundle_short_version, '<REQUIRED_VERSION>') != 0
    );
    ```
 
@@ -204,25 +204,27 @@ Examples:
 
 ### SQL injection prevention
 
-All software titles and versions are automatically escaped to prevent SQL injection:
+All bundle identifiers and versions are automatically escaped to prevent SQL injection:
 
-- Single quotes are doubled: `O'Reilly App` → `O''Reilly App`
+- Single quotes are doubled: `com.o'reilly.app` → `com.o''reilly.app`
 - Query remains safe even with malicious input
 - Tested against common injection patterns (OR clauses, UNION, DROP TABLE, etc.)
 
 ### Important considerations
 
-1. **Policy cleanup**: Policies are NOT automatically deleted when software is removed. You should manually delete outdated policies or implement cleanup automation.
+1. **Bundle ID extraction**: The processor automatically extracts the CFBundleIdentifier from the .app bundle within the package. If extraction fails, policy creation is skipped with a warning.
 
-2. **Version detection**: Uses exact version matching (`version != 'X.Y.Z'`). Semantic version comparison (e.g., `< 3.0.0`) is not currently supported.
+2. **Version comparison**: Uses osquery's `version_compare()` function for semantic version comparison. Policies fail when hosts have versions less than the required version (`version_compare(bundle_short_version, 'X.Y.Z') < 0`).
 
-3. **Error handling**: Policy creation failures are logged as warnings and don't block package uploads. Check AutoPkg output for any policy-related errors.
+3. **Policy cleanup**: Policies are NOT automatically deleted when software is removed. You should manually delete outdated policies or implement cleanup automation.
 
-4. **Team vs global policies**:
+4. **Error handling**: Policy creation failures are logged as warnings and don't block package uploads. Check AutoPkg output for any policy-related errors.
+
+5. **Team vs global policies**:
    - Direct mode: Creates team-specific policies when `FLEET_TEAM_ID` > 0, global policies when `FLEET_TEAM_ID` = 0
    - GitOps mode: Policy scope determined by GitOps repository structure
 
-5. **Idempotency**: Existing policies with the same name are updated (not duplicated) when recipes run again
+6. **Idempotency**: Existing policies with the same name are updated (not duplicated) when recipes run again
 
 ---
 
