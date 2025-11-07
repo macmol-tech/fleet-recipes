@@ -2,7 +2,9 @@
 max-line-length = 88
 extend-ignore = 
     # Allow slightly longer lines to match black's default
-    E501
+    E501,
+    # Allow f-strings without placeholders (intentional for consistency)
+    F541
 exclude = 
     .git,
     __pycache__,

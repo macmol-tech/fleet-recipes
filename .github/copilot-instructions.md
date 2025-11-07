@@ -145,7 +145,7 @@ This project follows AutoPkg's strict code style requirements. ALL Python code m
 - `.env.example` - Example environment variables for local testing
 
 ### Recipe Directories
-**Every directory other than `.github` and `FleetImporter` is a vendor recipe directory.**
+**Every directory other than `.github`, `_templates`, and `FleetImporter` is a vendor recipe directory.**
 
 The repository structure grows over time as new recipes are added. Current examples include:
 - `Anthropic/` - Claude recipes
@@ -155,16 +155,25 @@ The repository structure grows over time as new recipes are added. Current examp
 - `Raycast Technologies/` - Raycast recipes
 - `Signal/` - Signal recipes
 
-Each vendor directory contains direct and/or gitops mode recipes:
-- `<VendorName>/<SoftwareTitle>.fleet.direct.recipe.yaml` - Direct mode (upload to Fleet API)
-- `<VendorName>/<SoftwareTitle>.fleet.gitops.recipe.yaml` - GitOps mode (upload to S3, create PR)
+Each vendor directory contains combined recipes that support both modes:
+- `<VendorName>/<SoftwareTitle>.fleet.recipe.yaml` - Combined recipe (supports both direct and GitOps modes)
+
+**Template directory:**
+- `_templates/Template.fleet.recipe.yaml` - Base template for creating new recipes
 
 ### Recipe Types
-This repository uses two types of recipes:
+This repository uses a combined recipe approach:
+- **Combined Recipe** (`.fleet.recipe.yaml`): Single recipe file that supports both direct and GitOps modes
+  - Use `_templates/Template.fleet.recipe.yaml` as the starting point for all new recipes
+  - Mode is controlled by the `GITOPS_MODE` input variable (default: `false` for direct mode)
+  - Users can override to GitOps mode via recipe overrides or AutoPkg preferences
+  - All mode-specific credentials come from AutoPkg preferences/environment variables
+  
+**Legacy recipe types** (for reference, not used in new recipes):
 - **Direct Mode** (`.fleet.direct.recipe.yaml`): Upload packages directly to Fleet via API
 - **GitOps Mode** (`.fleet.gitops.recipe.yaml`): Upload to S3 and create pull requests for Git-based configuration
 
-All recipes follow a consistent directory structure: `<VendorName>/<SoftwareTitle>.fleet.(direct|gitops).recipe.yaml`
+All recipes follow a consistent directory structure: `<VendorName>/<SoftwareName>.fleet.recipe.yaml`
 
 ### Recipe Structure Understanding
 AutoPkg recipes follow this pattern:
@@ -245,11 +254,23 @@ Process:
 ## Common Tasks
 
 ### Creating New Recipes
+- **Use the Template**: Start with `_templates/Template.fleet.recipe.yaml` as the base for all new recipes
 - **Follow the Style Guide**: All new recipes must follow the formatting and naming conventions in `CONTRIBUTING.md` - see the "Style Guide" section for complete requirements
-- Copy an existing recipe file (e.g., `GitHub/GithubDesktop.fleet.direct.recipe.yaml` or `GitHub/GithubDesktop.fleet.gitops.recipe.yaml`)
-- Update the `ParentRecipe` to point to upstream AutoPkg recipe
-- Modify processor arguments for your specific Fleet/GitOps configuration
-- Test with `autopkg run YourNew.fleet.direct.recipe.yaml -v` or `autopkg run YourNew.fleet.gitops.recipe.yaml -v`
+- Copy the template to your vendor directory: `cp _templates/Template.fleet.recipe.yaml VendorName/SoftwareName.fleet.recipe.yaml`
+- Update the recipe metadata:
+  - `Description`: Brief description of what the recipe does
+  - `Identifier`: Follow pattern `com.github.fleet.SoftwareName`
+  - `ParentRecipe`: Point to upstream AutoPkg recipe (e.g., `com.github.homebysix.pkg.SoftwareName`)
+- Customize Input variables:
+  - `NAME`: Software display name
+  - `CATEGORIES`: Add appropriate categories for self-service
+  - `ICON`: Leave empty for automatic extraction, or specify custom icon path
+  - Adjust other optional variables as needed
+- Set mode-specific defaults:
+  - `GITOPS_MODE`: Set to `false` for direct mode by default
+  - `FLEET_GITOPS_SOFTWARE_DIR` and `FLEET_GITOPS_TEAM_YAML_PATH`: Keep defaults unless you have specific requirements
+- Test with `autopkg run VendorName/SoftwareName.fleet.recipe.yaml -v`
+- All mode-specific credentials (API tokens, AWS keys, etc.) come from AutoPkg preferences or environment variables, NOT from the recipe Input section
 
 ### Modifying the Processor
 - Edit `FleetImporter/FleetImporter.py`

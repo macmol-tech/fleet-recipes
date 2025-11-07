@@ -196,11 +196,6 @@ class FleetImporter(Processor):
             "default": "",
             "description": "Path to PNG icon file (square, 120x120 to 1024x1024 px) to upload to Fleet. If not provided, will attempt to extract icon from app bundle automatically.",
         },
-        "skip_icon_extraction": {
-            "required": False,
-            "default": False,
-            "description": "Skip automatic icon extraction from app bundle. Default: False",
-        },
         "pre_install_query": {
             "required": False,
             "default": "",
@@ -260,9 +255,23 @@ class FleetImporter(Processor):
         # Platform parameter accepted for future use but not currently utilized
         _ = self.env.get("platform", DEFAULT_PLATFORM)  # noqa: F841
 
-        fleet_api_base = self.env["fleet_api_base"].rstrip("/")
-        fleet_token = self.env["fleet_api_token"]
-        team_id = int(self.env["team_id"])
+        # Validate required direct mode parameters
+        fleet_api_base = self.env.get("fleet_api_base")
+        fleet_token = self.env.get("fleet_api_token")
+        team_id = self.env.get("team_id")
+
+        if not all([fleet_api_base, fleet_token, team_id]):
+            raise ProcessorError(
+                "Direct mode requires: fleet_api_base, fleet_api_token, and team_id. "
+                "These can be set via recipe Input variables or AutoPkg preferences:\n"
+                "  defaults write com.github.autopkg FLEET_API_BASE 'https://fleet.example.com'\n"
+                "  defaults write com.github.autopkg FLEET_API_TOKEN 'your-token'\n"
+                "  defaults write com.github.autopkg FLEET_TEAM_ID '1'"
+            )
+
+        # Now safe to use - strip/convert values
+        fleet_api_base = fleet_api_base.rstrip("/")
+        team_id = int(team_id)
 
         # Fleet deployment options
         self_service = bool(self.env.get("self_service", False))
@@ -274,6 +283,18 @@ class FleetImporter(Processor):
         uninstall_script = self.env.get("uninstall_script", "")
         pre_install_query = self.env.get("pre_install_query", "")
         post_install_script = self.env.get("post_install_script", "")
+
+        # Validate label targeting - only one of include/exclude allowed
+        if labels_include_any and labels_exclude_any:
+            raise ProcessorError(
+                "Only one of labels_include_any or labels_exclude_any may be specified, not both."
+            )
+
+        # Validate categories - required when self_service is enabled
+        if self_service and not categories:
+            raise ProcessorError(
+                "CATEGORIES is required when SELF_SERVICE is true. Please specify at least one category."
+            )
 
         # Query Fleet API to get server version
         self.output("Querying Fleet server version...")
@@ -360,7 +381,6 @@ class FleetImporter(Processor):
 
         # Upload icon if provided
         icon_path_str = self.env.get("icon", "").strip()
-        skip_icon_extraction = bool(self.env.get("skip_icon_extraction", False))
 
         extracted_icon_path = None  # Track if we need to clean up
 
@@ -391,7 +411,7 @@ class FleetImporter(Processor):
                 self.output(
                     f"Warning: Icon file not found: {icon_path}. Skipping icon upload."
                 )
-        elif title_id and not skip_icon_extraction:
+        elif title_id:
             # No manual icon - try to extract from package automatically
             self.output("Attempting to extract icon from package automatically...")
             extracted_icon_path = self._extract_icon_from_pkg(pkg_path)
@@ -461,6 +481,18 @@ class FleetImporter(Processor):
         post_install_script = self.env.get("post_install_script", "")
         icon_path_str = self.env.get("icon", "").strip()
 
+        # Validate label targeting - only one of include/exclude allowed
+        if labels_include_any and labels_exclude_any:
+            raise ProcessorError(
+                "Only one of labels_include_any or labels_exclude_any may be specified, not both."
+            )
+
+        # Validate categories - required when self_service is enabled
+        if self_service and not categories:
+            raise ProcessorError(
+                "CATEGORIES is required when SELF_SERVICE is true. Please specify at least one category."
+            )
+
         # Clone GitOps repository first (fail early if this doesn't work)
         self.output(f"Cloning GitOps repository: {gitops_repo_url}")
         temp_dir = None
@@ -471,14 +503,13 @@ class FleetImporter(Processor):
 
             # Handle icon - either from manual path or auto-extraction
             icon_relative_path = None
-            skip_icon_extraction = bool(self.env.get("skip_icon_extraction", False))
 
             if icon_path_str:
                 # Manual icon path provided
                 icon_relative_path = self._copy_icon_to_gitops_repo(
                     temp_dir, icon_path_str, software_title
                 )
-            elif not skip_icon_extraction:
+            else:
                 # Try to extract icon from package automatically
                 self.output("Attempting to extract icon from package automatically...")
                 extracted_icon_path = self._extract_icon_from_pkg(pkg_path)

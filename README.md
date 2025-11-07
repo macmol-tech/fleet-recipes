@@ -8,10 +8,12 @@ Run `autopkg repo-add fleet-recipes` to add this repo.
 
 ## Overview
 
-FleetImporter extends AutoPkg to integrate with Fleet's software management. It supports two deployment modes:
+FleetImporter extends AutoPkg to integrate with Fleet's software management. Recipes use a **combined format** that supports both deployment modes in a single file:
 
 - **[Direct mode](#direct-mode)**: Upload packages directly to Fleet via API
 - **[GitOps mode](#gitops-mode)**: Upload to S3 and create pull requests for Git-based configuration management
+
+Mode is controlled by the `GITOPS_MODE` input variable (default: `false`). Users can switch modes via recipe overrides without maintaining separate recipe files.
 
 ## Requirements
 
@@ -25,16 +27,18 @@ FleetImporter extends AutoPkg to integrate with Fleet's software management. It 
 
 ## Direct mode
 
-Upload packages directly to your Fleet server.
+Upload packages directly to your Fleet server. This is the **default mode** for all recipes.
 
-### Required configuration
-
-Set via AutoPkg preferences (recommended):
+### Running recipes in direct mode
 
 ```bash
+# Set required configuration
 defaults write com.github.autopkg FLEET_API_BASE "https://fleet.example.com"
 defaults write com.github.autopkg FLEET_API_TOKEN "your-fleet-api-token"
 defaults write com.github.autopkg FLEET_TEAM_ID "1"
+
+# Run any recipe (defaults to direct mode)
+autopkg run VendorName/SoftwareName.fleet.recipe.yaml
 ```
 
 ### Required recipe arguments
@@ -48,7 +52,7 @@ Process:
     fleet_api_base: "%FLEET_API_BASE%"
     fleet_api_token: "%FLEET_API_TOKEN%"
     team_id: "%FLEET_TEAM_ID%"
-  Processor: com.github.kitzy.FleetImporter/FleetImporter
+  Processor: com.github.fleet.FleetImporter/FleetImporter
 ```
 
 ### Optional recipe arguments
@@ -61,22 +65,10 @@ Process:
 | `labels_include_any` | array | `[]` | Only install on devices with these labels |
 | `labels_exclude_any` | array | `[]` | Exclude devices with these labels |
 | `icon` | string | - | Path to PNG icon (square, 120-1024px, max 100KB). If not provided, automatically extracts from app bundle. |
-| `skip_icon_extraction` | boolean | `false` | Skip automatic icon extraction from app bundle |
 | `install_script` | string | - | Custom installation script |
 | `uninstall_script` | string | - | Custom uninstall script |
 | `pre_install_query` | string | - | osquery to run before install |
 | `post_install_script` | string | - | Script to run after install |
-
-### Automatic icon extraction
-
-FleetImporter automatically extracts and uploads application icons from `.pkg` files without requiring manual icon files:
-
-- **Automatic extraction**: Finds the `.app` bundle in the package, extracts the icon from `Info.plist`, and converts it to PNG format
-- **Size optimization**: Automatically compresses icons that exceed Fleet's 100 KB limit by resizing to 512px, 256px, or 128px
-- **Format conversion**: Converts macOS `.icns` files to PNG format using the built-in `sips` tool
-- **Fallback**: If extraction fails, continues without an icon (or uses manual `icon` path if provided)
-- **Override**: Specify `icon: path/to/icon.png` in your recipe to use a custom icon instead of auto-extraction
-- **Disable**: Set `skip_icon_extraction: true` to skip automatic extraction entirely
 
 ---
 
@@ -87,6 +79,19 @@ Upload packages to S3 and create GitOps pull requests for Fleet configuration ma
 > **Note:** GitOps mode requires you to provide your own S3 bucket and CloudFront distribution. When Fleet operates in GitOps mode, it deletes any packages not defined in the YAML files during sync ([fleetdm/fleet#34137](https://github.com/fleetdm/fleet/issues/34137)). By hosting packages externally and using pull requests, you can stage updates and merge them at your own pace.
 
 > **Dependency:** GitOps mode requires `boto3>=1.18.0` for S3 operations. If not already installed, the processor will automatically install it using pip when GitOps mode is first used.
+
+### Switching to GitOps mode
+
+To use GitOps mode, create a recipe override and set `GITOPS_MODE: true`:
+
+```bash
+# Create an override
+autopkg make-override VendorName/SoftwareName.fleet.recipe.yaml
+
+# Edit the override to set GITOPS_MODE: true
+# Then run it
+autopkg run SoftwareName.fleet.recipe.yaml
+```
 
 ### Required infrastructure
 
@@ -149,13 +154,17 @@ All [optional arguments](#optional-recipe-arguments) from direct mode, plus:
 3. Software YAML files are created in GitOps repo
 4. Pull request is opened for review
 
-## Requirements
+---
 
-- macOS (AutoPkg requirement)
-- AutoPkg 2.7+
-- Fleet 4.74.0+ with software management enabled
-- Fleet API token with software management permissions
-- For GitOps: AWS credentials, S3 bucket, CloudFront distribution, GitHub token
+## Automatic icon extraction
+
+FleetImporter automatically extracts and uploads application icons from `.pkg` files without requiring manual icon files:
+
+- **Automatic extraction**: Finds the `.app` bundle in the package, extracts the icon from `Info.plist`, and converts it to PNG format
+- **Size optimization**: Automatically compresses icons that exceed Fleet's 100 KB limit by resizing to 512px, 256px, or 128px
+- **Format conversion**: Converts macOS `.icns` files to PNG format using the built-in `sips` tool
+- **Fallback**: If extraction fails, continues without an icon (or uses manual `icon` path if provided)
+- **Override**: Specify `icon: path/to/icon.png` in your recipe to use a custom icon instead of auto-extraction
 
 ---
 

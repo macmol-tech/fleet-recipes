@@ -4,24 +4,27 @@ Test suite to validate that all recipes comply with the style guide requirements
 defined in CONTRIBUTING.md.
 
 This validates:
-1. Filename conventions (.fleet.direct. or .fleet.gitops.)
-2. Identifier patterns (com.github.fleet.direct/gitops.<SoftwareName>)
+1. Filename conventions (.fleet.recipe.yaml for combined recipes)
+2. Identifier patterns (com.github.fleet.<SoftwareName>)
 3. Single processor stage (FleetImporter only)
 4. NAME variable exists in Input section
 5. SELF_SERVICE must be set to true
 6. AUTOMATIC_INSTALL must be set to false
-7. FLEET_GITOPS_SOFTWARE_DIR must be set to "lib/macos/software" (GitOps)
-8. FLEET_GITOPS_TEAM_YAML_PATH must be set to "teams/workstations.yml" (GitOps)
-9. Categories use only supported values
-10. Process arguments reference Input variables correctly
-11. Vendor folder structure
+7. CATEGORIES required when SELF_SERVICE is true
+8. GITOPS_MODE variable exists (defaults to false)
+9. FLEET_GITOPS_SOFTWARE_DIR must be set to "lib/macos/software"
+10. FLEET_GITOPS_TEAM_YAML_PATH must be set to "teams/workstations.yml"
+11. Categories use only supported values
+12. Process arguments reference Input variables correctly
+13. Vendor folder structure
+14. Only one of LABELS_INCLUDE_ANY or LABELS_EXCLUDE_ANY can be set
 """
 
 import glob
 import os
 import sys
+
 import yaml
-from pathlib import Path
 
 
 class StyleGuideValidator:
@@ -39,14 +42,18 @@ class StyleGuideValidator:
         self.errors = []
         self.warnings = []
         self.recipe_count = 0
-        self.direct_count = 0
-        self.gitops_count = 0
+        self.combined_count = 0
+        self.legacy_count = 0
 
     def validate_all_recipes(self):
         """Find and validate all recipe files."""
         recipe_files = glob.glob("**/*.recipe.yaml", recursive=True)
-        # Exclude FleetImporter directory
-        recipe_files = [f for f in recipe_files if "FleetImporter" not in f]
+        # Exclude FleetImporter directory and template files
+        recipe_files = [
+            f
+            for f in recipe_files
+            if "FleetImporter" not in f and "_templates" not in f
+        ]
 
         print(f"=== Style Guide Compliance Validation ===")
         print(f"Found {len(recipe_files)} recipe files to validate\n")
@@ -84,17 +91,27 @@ class StyleGuideValidator:
         # Validate required AutoPkg recipe fields
         self.validate_required_fields(recipe_path, data)
 
-        # Determine recipe mode from filename
-        is_gitops = ".gitops." in recipe_path
-        is_direct = ".direct." in recipe_path
+        # Determine recipe type from filename
+        is_combined = (
+            ".fleet.recipe.yaml" in recipe_path
+            and ".direct." not in recipe_path
+            and ".gitops." not in recipe_path
+        )
+        is_legacy_direct = ".fleet.direct.recipe.yaml" in recipe_path
+        is_legacy_gitops = ".fleet.gitops.recipe.yaml" in recipe_path
 
-        if is_gitops:
-            self.gitops_count += 1
-        elif is_direct:
-            self.direct_count += 1
+        if is_combined:
+            self.combined_count += 1
+        elif is_legacy_direct or is_legacy_gitops:
+            self.legacy_count += 1
+            self.warnings.append(
+                f"{recipe_path}: Using legacy recipe format. Consider migrating to combined format (.fleet.recipe.yaml)"
+            )
 
         # Validate identifier pattern
-        self.validate_identifier(recipe_path, data, is_gitops, is_direct)
+        self.validate_identifier(
+            recipe_path, data, is_combined, is_legacy_direct, is_legacy_gitops
+        )
 
         # Validate single processor stage
         self.validate_single_processor(recipe_path, data)
@@ -114,39 +131,66 @@ class StyleGuideValidator:
         # Validate AUTOMATIC_INSTALL requirement
         self.validate_automatic_install(recipe_path, input_section)
 
-        # Validate GitOps-specific requirements
-        if is_gitops:
+        # Validate GITOPS_MODE exists for combined recipes
+        if is_combined:
+            self.validate_gitops_mode(recipe_path, input_section)
+
+        # Validate GitOps-specific paths (only for combined and legacy GitOps recipes)
+        if is_combined or is_legacy_gitops:
             self.validate_gitops_software_dir(recipe_path, input_section)
             self.validate_gitops_team_yaml_path(recipe_path, input_section)
 
-        # Validate categories (if present)
+        # Validate categories requirement (when self_service is true)
+        self.validate_categories_requirement(recipe_path, input_section)
+
+        # Validate categories values (if present)
         self.validate_categories(recipe_path, input_section)
+
+        # Validate label targeting (only one of include/exclude)
+        self.validate_label_targeting(recipe_path, input_section)
 
         # Validate Process section arguments
         process_list = data.get("Process", [])
         if process_list and len(process_list) > 0:
             args = process_list[0].get("Arguments", {})
-            self.validate_process_arguments(recipe_path, args, is_gitops)
+            self.validate_process_arguments(recipe_path, args, is_combined)
 
         print(f"   ✅ Validation complete\n")
 
     def validate_filename(self, recipe_path):
-        """Validate filename follows convention: <SoftwareName>.fleet.(direct|gitops).recipe.yaml"""
+        """Validate filename follows convention: <SoftwareName>.fleet.recipe.yaml or legacy formats"""
         filename = os.path.basename(recipe_path)
 
-        if not (filename.endswith(".fleet.direct.recipe.yaml") or filename.endswith(".fleet.gitops.recipe.yaml")):
+        # Check for combined recipe format (preferred)
+        is_combined = (
+            filename.endswith(".fleet.recipe.yaml")
+            and ".direct." not in filename
+            and ".gitops." not in filename
+        )
+        # Check for legacy formats
+        is_legacy = filename.endswith(".fleet.direct.recipe.yaml") or filename.endswith(
+            ".fleet.gitops.recipe.yaml"
+        )
+
+        if not (is_combined or is_legacy):
             self.errors.append(
-                f"{recipe_path}: Filename must end with .fleet.direct.recipe.yaml or .fleet.gitops.recipe.yaml"
+                f"{recipe_path}: Filename must end with .fleet.recipe.yaml (preferred) or legacy .fleet.direct/gitops.recipe.yaml"
             )
-            print(f"   ❌ Filename convention: Invalid (must be .fleet.direct/gitops.recipe.yaml)")
+            print(
+                f"   ❌ Filename convention: Invalid (must be .fleet.recipe.yaml or .fleet.direct/gitops.recipe.yaml)"
+            )
+        elif is_combined:
+            print(f"   ✅ Filename convention: {filename} (combined format)")
         else:
             mode = "direct" if ".fleet.direct." in filename else "gitops"
-            print(f"   ✅ Filename convention: {filename} ({mode} mode)")
+            print(
+                f"   ⚠️  Filename convention: {filename} (legacy {mode} format - consider migrating to combined)"
+            )
 
     def validate_vendor_folder(self, recipe_path):
         """Validate recipe is in a vendor folder (not at root)."""
         path_parts = recipe_path.split(os.sep)
-        
+
         # Should be VendorName/RecipeFile.yaml, so at least 2 parts
         if len(path_parts) < 2:
             self.errors.append(
@@ -168,19 +212,23 @@ class StyleGuideValidator:
         """Validate required AutoPkg recipe fields exist."""
         required_fields = ["Description", "Identifier", "Input", "Process"]
         missing = [field for field in required_fields if field not in data]
-        
+
         if missing:
             self.errors.append(
                 f"{recipe_path}: Missing required AutoPkg fields: {missing}"
             )
             print(f"   ❌ Required fields: Missing {missing}")
         else:
-            print(f"   ✅ Required fields: All present (Description, Identifier, Input, Process)")
+            print(
+                f"   ✅ Required fields: All present (Description, Identifier, Input, Process)"
+            )
 
-    def validate_identifier(self, recipe_path, data, is_gitops, is_direct):
-        """Validate identifier follows pattern: com.github.fleet.(direct|gitops).<SoftwareName>"""
+    def validate_identifier(
+        self, recipe_path, data, is_combined, is_legacy_direct, is_legacy_gitops
+    ):
+        """Validate identifier follows pattern: com.github.fleet.<SoftwareName> or legacy patterns"""
         identifier = data.get("Identifier", "")
-        
+
         if not identifier:
             self.errors.append(f"{recipe_path}: Missing Identifier field")
             print(f"   ❌ Identifier: Missing")
@@ -191,31 +239,54 @@ class StyleGuideValidator:
             self.errors.append(
                 f"{recipe_path}: Identifier must start with '{expected_prefix}', got '{identifier}'"
             )
-            print(f"   ❌ Identifier: '{identifier}' (must start with '{expected_prefix}')")
+            print(
+                f"   ❌ Identifier: '{identifier}' (must start with '{expected_prefix}')"
+            )
             return
 
-        # Check mode matches filename
+        # Check identifier format
         has_direct_id = ".direct." in identifier
         has_gitops_id = ".gitops." in identifier
+        has_mode_in_id = has_direct_id or has_gitops_id
 
-        if is_direct and not has_direct_id:
-            self.errors.append(
-                f"{recipe_path}: Direct recipe identifier must contain '.direct.', got '{identifier}'"
-            )
-            print(f"   ❌ Identifier: '{identifier}' (must contain '.direct.' for direct mode)")
-        elif is_gitops and not has_gitops_id:
-            self.errors.append(
-                f"{recipe_path}: GitOps recipe identifier must contain '.gitops.', got '{identifier}'"
-            )
-            print(f"   ❌ Identifier: '{identifier}' (must contain '.gitops.' for gitops mode)")
-        else:
-            mode = "direct" if has_direct_id else "gitops"
-            print(f"   ✅ Identifier: {identifier} ({mode} mode)")
+        if is_combined:
+            # Combined recipes should NOT have .direct. or .gitops. in identifier
+            if has_mode_in_id:
+                self.errors.append(
+                    f"{recipe_path}: Combined recipe identifier should not contain '.direct.' or '.gitops.', got '{identifier}'"
+                )
+                print(
+                    f"   ❌ Identifier: '{identifier}' (should be 'com.github.fleet.<SoftwareName>' for combined recipes)"
+                )
+            else:
+                print(f"   ✅ Identifier: {identifier} (combined format)")
+        elif is_legacy_direct:
+            # Legacy direct recipes should have .direct. in identifier
+            if not has_direct_id:
+                self.errors.append(
+                    f"{recipe_path}: Direct recipe identifier must contain '.direct.', got '{identifier}'"
+                )
+                print(
+                    f"   ❌ Identifier: '{identifier}' (must contain '.direct.' for direct mode)"
+                )
+            else:
+                print(f"   ✅ Identifier: {identifier} (legacy direct mode)")
+        elif is_legacy_gitops:
+            # Legacy gitops recipes should have .gitops. in identifier
+            if not has_gitops_id:
+                self.errors.append(
+                    f"{recipe_path}: GitOps recipe identifier must contain '.gitops.', got '{identifier}'"
+                )
+                print(
+                    f"   ❌ Identifier: '{identifier}' (must contain '.gitops.' for gitops mode)"
+                )
+            else:
+                print(f"   ✅ Identifier: {identifier} (legacy gitops mode)")
 
     def validate_single_processor(self, recipe_path, data):
         """Validate recipe has single processor stage: FleetImporter."""
         process_list = data.get("Process", [])
-        
+
         if not process_list:
             self.errors.append(f"{recipe_path}: Missing Process section")
             print(f"   ❌ Process section: Missing")
@@ -225,7 +296,9 @@ class StyleGuideValidator:
             self.warnings.append(
                 f"{recipe_path}: Process has {len(process_list)} processors (style guide recommends single FleetImporter processor)"
             )
-            print(f"   ⚠️  Process stages: {len(process_list)} (style guide recommends 1)")
+            print(
+                f"   ⚠️  Process stages: {len(process_list)} (style guide recommends 1)"
+            )
         else:
             print(f"   ✅ Process stages: 1 (single processor)")
 
@@ -240,13 +313,15 @@ class StyleGuideValidator:
                     break
 
         if not has_fleet_importer:
-            self.errors.append(f"{recipe_path}: FleetImporter processor not found in Process")
+            self.errors.append(
+                f"{recipe_path}: FleetImporter processor not found in Process"
+            )
             print(f"   ❌ Processor type: FleetImporter not found")
 
     def validate_name(self, recipe_path, input_section):
         """Validate NAME variable exists in Input section."""
         name = input_section.get("NAME")
-        
+
         if name is None:
             self.errors.append(f"{recipe_path}: Missing NAME in Input section")
             print(f"   ❌ NAME: Missing (required)")
@@ -256,7 +331,7 @@ class StyleGuideValidator:
     def validate_categories(self, recipe_path, input_section):
         """Validate categories use only supported values."""
         categories = input_section.get("CATEGORIES", [])
-        
+
         if not categories:
             # Categories are optional, just note it
             print(f"   ℹ️  CATEGORIES: None specified (optional)")
@@ -281,9 +356,7 @@ class StyleGuideValidator:
         self_service = input_section.get("SELF_SERVICE")
 
         if self_service is None:
-            self.errors.append(
-                f"{recipe_path}: Missing SELF_SERVICE in Input section"
-            )
+            self.errors.append(f"{recipe_path}: Missing SELF_SERVICE in Input section")
             print(f"   ❌ SELF_SERVICE: Missing (required)")
         elif self_service is not True:
             self.errors.append(
@@ -309,6 +382,68 @@ class StyleGuideValidator:
             print(f"   ❌ AUTOMATIC_INSTALL: {automatic_install} (must be false)")
         else:
             print(f"   ✅ AUTOMATIC_INSTALL: false")
+
+    def validate_gitops_mode(self, recipe_path, input_section):
+        """Validate GITOPS_MODE is present in combined recipes and set to false by default."""
+        gitops_mode = input_section.get("GITOPS_MODE")
+
+        if gitops_mode is None:
+            self.errors.append(
+                f"{recipe_path}: Missing GITOPS_MODE in Input section (required for combined recipes)"
+            )
+            print(f"   ❌ GITOPS_MODE: Missing (required for combined recipes)")
+        elif gitops_mode is not False:
+            self.errors.append(
+                f"{recipe_path}: GITOPS_MODE must default to false, got {gitops_mode}"
+            )
+            print(f"   ❌ GITOPS_MODE: {gitops_mode} (must default to false)")
+        else:
+            print(f"   ✅ GITOPS_MODE: false (default)")
+
+    def validate_categories_requirement(self, recipe_path, input_section):
+        """Validate CATEGORIES is present when SELF_SERVICE is true."""
+        self_service = input_section.get("SELF_SERVICE")
+        categories = input_section.get("CATEGORIES")
+
+        # Only validate if SELF_SERVICE is explicitly true
+        if self_service is True:
+            if categories is None:
+                self.errors.append(
+                    f"{recipe_path}: CATEGORIES is required when SELF_SERVICE is true"
+                )
+                print(f"   ❌ CATEGORIES: Missing (required when SELF_SERVICE is true)")
+            elif not categories:
+                self.errors.append(
+                    f"{recipe_path}: CATEGORIES must not be empty when SELF_SERVICE is true"
+                )
+                print(
+                    f"   ❌ CATEGORIES: Empty (must have at least one category when SELF_SERVICE is true)"
+                )
+            else:
+                print(f"   ✅ CATEGORIES: {categories} (required with SELF_SERVICE)")
+
+    def validate_label_targeting(self, recipe_path, input_section):
+        """Validate that only one of LABELS_INCLUDE_ANY or LABELS_EXCLUDE_ANY is set."""
+        labels_include = input_section.get("LABELS_INCLUDE_ANY")
+        labels_exclude = input_section.get("LABELS_EXCLUDE_ANY")
+
+        # Check if both are set to non-empty values
+        has_include = labels_include is not None and labels_include
+        has_exclude = labels_exclude is not None and labels_exclude
+
+        if has_include and has_exclude:
+            self.errors.append(
+                f"{recipe_path}: Cannot set both LABELS_INCLUDE_ANY and LABELS_EXCLUDE_ANY (mutually exclusive)"
+            )
+            print(
+                f"   ❌ Label Targeting: Both LABELS_INCLUDE_ANY and LABELS_EXCLUDE_ANY are set (mutually exclusive)"
+            )
+        elif has_include:
+            print(f"   ✅ Label Targeting: LABELS_INCLUDE_ANY only")
+        elif has_exclude:
+            print(f"   ✅ Label Targeting: LABELS_EXCLUDE_ANY only")
+        else:
+            print(f"   ✅ Label Targeting: None (valid)")
 
     def validate_gitops_software_dir(self, recipe_path, input_section):
         """Validate FLEET_GITOPS_SOFTWARE_DIR is set to 'lib/macos/software'."""
@@ -350,7 +485,7 @@ class StyleGuideValidator:
         else:
             print(f"   ✅ FLEET_GITOPS_TEAM_YAML_PATH: '{expected}'")
 
-    def validate_process_arguments(self, recipe_path, args, is_gitops):
+    def validate_process_arguments(self, recipe_path, args, is_combined):
         """Validate Process section arguments reference Input variables correctly."""
         # Check self_service argument
         self_service_arg = args.get("self_service")
@@ -376,8 +511,8 @@ class StyleGuideValidator:
         else:
             print(f"   ✅ Process automatic_install: '%AUTOMATIC_INSTALL%'")
 
-        # Check GitOps-specific Process arguments
-        if is_gitops:
+        # Check combined recipe Process arguments (includes GitOps support)
+        if is_combined:
             software_dir_arg = args.get("gitops_software_dir")
             if software_dir_arg != "%FLEET_GITOPS_SOFTWARE_DIR%":
                 self.errors.append(
@@ -411,8 +546,8 @@ class StyleGuideValidator:
         print("=" * 70)
         print(f"\n📊 Statistics:")
         print(f"   Total recipes validated: {self.recipe_count}")
-        print(f"   Direct mode recipes: {self.direct_count}")
-        print(f"   GitOps mode recipes: {self.gitops_count}")
+        print(f"   Combined recipes: {self.combined_count}")
+        print(f"   Legacy recipes: {self.legacy_count}")
         print(f"\n🔍 Validation Results:")
         print(f"   Errors: {len(self.errors)}")
         print(f"   Warnings: {len(self.warnings)}")
@@ -431,7 +566,9 @@ class StyleGuideValidator:
             print("\n✅ All recipes comply with the style guide!")
             print("\nValidated requirements:")
             print("   ✅ YAML syntax is valid")
-            print("   ✅ Required AutoPkg fields present (Description, Identifier, Input, Process)")
+            print(
+                "   ✅ Required AutoPkg fields present (Description, Identifier, Input, Process)"
+            )
             print("   ✅ Filename conventions (.fleet.direct/gitops.recipe.yaml)")
             print("   ✅ Vendor folder structure (no spaces, proper organization)")
             print("   ✅ Identifier patterns (com.github.fleet.direct/gitops.<Name>)")

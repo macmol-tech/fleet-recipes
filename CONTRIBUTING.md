@@ -20,22 +20,22 @@ I am actively looking for 2-3 additional maintainers to help maintain this repos
 
 ### Adding New Recipes
 
-We encourage contributions of AutoPkg recipes for additional macOS software. Each software package should have two recipes:
+We encourage contributions of AutoPkg recipes for additional macOS software. All recipes use a **combined format** that supports both direct mode and GitOps mode in a single file.
 
-1. **Direct Fleet recipe** (`.fleet.recipe.yaml`) - Uploads directly to Fleet API
-2. **GitOps recipe** (`.fleet.gitops.recipe.yaml`) - Uploads to S3 and creates pull requests
+**Use the template**: Start with `_templates/Template.fleet.recipe.yaml` as the base for all new recipes.
 
 See the existing recipes in this repository for examples (Claude, Caffeine, GitHub Desktop, etc.).
 
 #### Recipe Requirements
 
-- Follow the established naming convention: `SoftwareName.fleet.recipe.yaml` and `SoftwareName.fleet.gitops.recipe.yaml`
+- Start from `_templates/Template.fleet.recipe.yaml` template
+- Follow the established naming convention: `SoftwareName.fleet.recipe.yaml`
 - Include appropriate categories from Fleet's supported list:
   - Browsers
   - Communication
   - Developer tools
   - Productivity
-- Use automatic icon extraction (default behavior, no action needed)
+- Use automatic icon extraction (default behavior when `ICON: ""`)
 - Use consistent formatting with existing recipes
 - Reference an existing AutoPkg parent recipe that produces a `.pkg` file
 
@@ -45,8 +45,7 @@ Place recipes in a folder named after the software vendor:
 
 ```
 VendorName/
-├── SoftwareName.fleet.recipe.yaml
-└── SoftwareName.fleet.gitops.recipe.yaml
+└── SoftwareName.fleet.recipe.yaml
 ```
 
 ## Style Guide
@@ -56,8 +55,7 @@ Recipes in this repository follow consistent formatting and naming conventions t
 ### Filename
 
 Recipe filenames should follow the pattern:
-- `<SoftwareName>.fleet.direct.recipe.yaml` for direct Fleet API uploads
-- `<SoftwareName>.fleet.gitops.recipe.yaml` for GitOps workflows
+- `<SoftwareName>.fleet.recipe.yaml` - Combined recipe supporting both modes
 
 Where `<SoftwareName>` matches the `NAME` input variable used throughout the recipe chain.
 
@@ -77,9 +75,7 @@ The recipe's `ParentRecipe` must be:
 
 ### Identifier
 
-Recipe identifiers should follow the pattern:
-- `com.github.fleet.direct.<SoftwareName>` for direct mode
-- `com.github.fleet.gitops.<SoftwareName>` for GitOps mode
+Recipe identifiers should follow the pattern `com.github.fleet.<SoftwareName>`.
 
 ### Processing
 
@@ -93,12 +89,13 @@ All recipes must include these arguments in the `Input` section:
 - `NAME`: Software display name (consistent with parent recipe)
 - `SELF_SERVICE` must be set to `true`
 - `AUTOMATIC_INSTALL` must be set to `false`
-- Software packaging arguments from parent recipe (`pkg_path`, `version`)
-- Mode-specific configuration:
-  - **Direct mode**: API tokens, Fleet base URL, team ID
-  - **GitOps mode**: S3 settings, GitHub tokens, repository URL
-    - `FLEET_GITOPS_SOFTWARE_DIR` must be set to `lib/macos/software`
-    - `FLEET_GITOPS_TEAM_YAML_PATH` must be set to `teams/workstations.yml`
+- `CATEGORIES`: At least one category (required when `SELF_SERVICE: true`)
+- `GITOPS_MODE`: Set to `false` by default (users can override to enable GitOps)
+- GitOps-specific paths:
+  - `FLEET_GITOPS_SOFTWARE_DIR` must be set to `lib/macos/software`
+  - `FLEET_GITOPS_TEAM_YAML_PATH` must be set to `teams/workstations.yml`
+
+**Note:** Mode-specific credentials (API tokens, AWS keys, etc.) come from AutoPkg preferences or environment variables, NOT from the recipe Input section.
 
 ### Categories
 
@@ -111,7 +108,7 @@ Use only these supported Fleet categories:
 ### Icons
 
 Recipes should use automatic icon extraction (the default behavior):
-- FleetImporter automatically extracts icons from .pkg files
+- FleetImporter automatically extracts icons from .pkg files when `ICON: ""`
 - No manual icon file needed in most cases
 - Icons are extracted from the .app bundle, converted to PNG, and compressed to meet Fleet's 100 KB limit
 
@@ -120,10 +117,7 @@ Only include a manual icon file if automatic extraction is not technically possi
 - Square dimensions between 120x120px and 1024x1024px
 - Less than 100KB filesize (Fleet requirement)
 - Named `<SoftwareName>.png`
-- Referenced in recipe as `icon: <SoftwareName>.png`
-
-To disable automatic extraction (rare cases only):
-- Add `skip_icon_extraction: true` to recipe arguments
+- Referenced in recipe as `ICON: <SoftwareName>.png`
 
 ### YAML Formatting
 
