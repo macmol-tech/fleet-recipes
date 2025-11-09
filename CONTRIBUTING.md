@@ -171,6 +171,36 @@ python3 -m flake8 FleetImporter/FleetImporter.py
 3. **Run code checks**: For processor changes, pass all style checks
 4. **Update documentation**: Add or update README sections as needed
 
+### Using Pre-Commit Hooks
+
+This repository includes pre-commit hooks that automatically validate AutoPkg recipes before commits. Using pre-commit is optional but highly recommended to catch issues early.
+
+For details on using pre-commit with AutoPkg, see [Using pre-commit to validate AutoPkg recipes](https://www.elliotjordan.com/posts/pre-commit-02-autopkg/).
+
+To enable pre-commit:
+
+1. **Install pre-commit** (if not already installed):
+   ```bash
+   brew install pre-commit
+   ```
+
+2. **Activate the hooks** in your cloned repository:
+   ```bash
+   cd /path/to/fleet-recipes
+   pre-commit install
+   ```
+
+Once installed, the hooks will automatically run when you attempt to commit changes. You can also manually run the checks on all files:
+
+```bash
+pre-commit run --all-files
+```
+
+The pre-commit configuration checks for:
+- Valid AutoPkg recipe format and structure
+- Prevention of AutoPkg overrides (`.recipe` files in recipe repos)
+- Prevention of AutoPkg trust info files
+
 ### Pull Request Process
 
 1. Fork the repository
