@@ -279,26 +279,49 @@ class FleetImporter(Processor):
         labels_include_any = list(self.env.get("labels_include_any", []))
         labels_exclude_any = list(self.env.get("labels_exclude_any", []))
         categories = list(self.env.get("categories", []))
-        
+
         # Read script files if paths are provided, otherwise use inline content
         install_script_input = self.env.get("install_script", "")
         uninstall_script_input = self.env.get("uninstall_script", "")
         pre_install_query = self.env.get("pre_install_query", "")
         post_install_script_input = self.env.get("post_install_script", "")
-        
+
         # Check if inputs look like file paths (end with .sh or contain /) or inline scripts
         # If they look like paths, read the file content
-        install_script = self._read_script_file(install_script_input) if (
-            install_script_input and (install_script_input.endswith('.sh') or '/' in install_script_input)
-        ) else install_script_input
-        
-        uninstall_script = self._read_script_file(uninstall_script_input) if (
-            uninstall_script_input and (uninstall_script_input.endswith('.sh') or '/' in uninstall_script_input)
-        ) else uninstall_script_input
-        
-        post_install_script = self._read_script_file(post_install_script_input) if (
-            post_install_script_input and (post_install_script_input.endswith('.sh') or '/' in post_install_script_input)
-        ) else post_install_script_input
+        install_script = (
+            self._read_script_file(install_script_input)
+            if (
+                install_script_input
+                and (
+                    install_script_input.endswith(".sh") or "/" in install_script_input
+                )
+            )
+            else install_script_input
+        )
+
+        uninstall_script = (
+            self._read_script_file(uninstall_script_input)
+            if (
+                uninstall_script_input
+                and (
+                    uninstall_script_input.endswith(".sh")
+                    or "/" in uninstall_script_input
+                )
+            )
+            else uninstall_script_input
+        )
+
+        post_install_script = (
+            self._read_script_file(post_install_script_input)
+            if (
+                post_install_script_input
+                and (
+                    post_install_script_input.endswith(".sh")
+                    or "/" in post_install_script_input
+                )
+            )
+            else post_install_script_input
+        )
 
         # Validate label targeting - only one of include/exclude allowed
         if labels_include_any and labels_exclude_any:
@@ -491,27 +514,50 @@ class FleetImporter(Processor):
         labels_include_any = list(self.env.get("labels_include_any", []))
         labels_exclude_any = list(self.env.get("labels_exclude_any", []))
         categories = list(self.env.get("categories", []))
-        
+
         # Read script files if paths are provided, otherwise use inline content
         install_script_input = self.env.get("install_script", "")
         uninstall_script_input = self.env.get("uninstall_script", "")
         pre_install_query = self.env.get("pre_install_query", "")
         post_install_script_input = self.env.get("post_install_script", "")
-        
+
         # Check if inputs look like file paths (end with .sh or contain /) or inline scripts
         # If they look like paths, read the file content
-        install_script = self._read_script_file(install_script_input) if (
-            install_script_input and (install_script_input.endswith('.sh') or '/' in install_script_input)
-        ) else install_script_input
-        
-        uninstall_script = self._read_script_file(uninstall_script_input) if (
-            uninstall_script_input and (uninstall_script_input.endswith('.sh') or '/' in uninstall_script_input)
-        ) else uninstall_script_input
-        
-        post_install_script = self._read_script_file(post_install_script_input) if (
-            post_install_script_input and (post_install_script_input.endswith('.sh') or '/' in post_install_script_input)
-        ) else post_install_script_input
-        
+        install_script = (
+            self._read_script_file(install_script_input)
+            if (
+                install_script_input
+                and (
+                    install_script_input.endswith(".sh") or "/" in install_script_input
+                )
+            )
+            else install_script_input
+        )
+
+        uninstall_script = (
+            self._read_script_file(uninstall_script_input)
+            if (
+                uninstall_script_input
+                and (
+                    uninstall_script_input.endswith(".sh")
+                    or "/" in uninstall_script_input
+                )
+            )
+            else uninstall_script_input
+        )
+
+        post_install_script = (
+            self._read_script_file(post_install_script_input)
+            if (
+                post_install_script_input
+                and (
+                    post_install_script_input.endswith(".sh")
+                    or "/" in post_install_script_input
+                )
+            )
+            else post_install_script_input
+        )
+
         icon_path_str = self.env.get("icon", "").strip()
 
         # Validate label targeting - only one of include/exclude allowed
@@ -702,7 +748,7 @@ class FleetImporter(Processor):
             return ""
 
         script_path = Path(script_path_str)
-        
+
         # Resolve relative paths relative to recipe directory
         if not script_path.is_absolute():
             recipe_dir = self.env.get("RECIPE_DIR")
