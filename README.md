@@ -19,9 +19,11 @@ Mode is controlled by the `GITOPS_MODE` input variable (default: `false`). Users
 
 - **Python 3.9+**: Required by FleetImporter processor
 - **AutoPkg 2.3+**: Required for recipe execution
-- **boto3 1.18.0+**: Required for GitOps mode S3 operations
-  - Processor attempts automatic installation at import time if not present
-  - If auto-installation fails, GitOps mode will not be available
+- **boto3 1.18.0+**: Required for GitOps mode S3 operations (optional for direct mode)
+  - Must be installed manually into AutoPkg's Python environment:
+    ```bash
+    /Library/AutoPkg/Python3/Python.framework/Versions/Current/bin/python3 -m pip install boto3>=1.18.0
+    ```
   - Direct mode uses only native Python libraries (no external dependencies)
 
 ---
@@ -93,20 +95,23 @@ Upload packages to S3 and create GitOps pull requests for Fleet configuration ma
 
 > **Note:** GitOps mode requires you to provide your own S3 bucket and CloudFront distribution. When Fleet operates in GitOps mode, it deletes any packages not defined in the YAML files during sync ([fleetdm/fleet#34137](https://github.com/fleetdm/fleet/issues/34137)). By hosting packages externally and using pull requests, you can stage updates and merge them at your own pace.
 
-> **Dependency:** GitOps mode requires `boto3>=1.18.0` for S3 operations. If not already installed, the processor will automatically install it using pip when GitOps mode is first used.
-
 ### Switching to GitOps mode
 
-To use GitOps mode, create a recipe override and set `GITOPS_MODE: true`:
+**Prerequisites:**
+1. Install boto3 into AutoPkg's Python environment (required for S3 operations):
+   ```bash
+   /Library/AutoPkg/Python3/Python.framework/Versions/Current/bin/python3 -m pip install boto3>=1.18.0
+   ```
 
-```bash
-# Create an override
-autopkg make-override VendorName/SoftwareName.fleet.recipe.yaml
+2. Create a recipe override and set `GITOPS_MODE: true`:
+   ```bash
+   # Create an override
+   autopkg make-override VendorName/SoftwareName.fleet.recipe.yaml
 
-# Edit the override to set GITOPS_MODE: true
-# Then run it
-autopkg run SoftwareName.fleet.recipe.yaml
-```
+   # Edit the override to set GITOPS_MODE: true
+   # Then run it
+   autopkg run SoftwareName.fleet.recipe.yaml
+   ```
 
 ### Required infrastructure
 

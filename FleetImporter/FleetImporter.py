@@ -17,7 +17,6 @@ import re
 import shutil
 import ssl
 import subprocess
-import sys
 import tempfile
 import urllib.error
 import urllib.parse
@@ -30,27 +29,11 @@ from autopkglib import Processor, ProcessorError
 
 __all__ = ["FleetImporter"]
 
-# Try to import boto3, install if not available
-try:
-    import boto3
-    from botocore.exceptions import ClientError, NoCredentialsError
-except ImportError:
-    # Attempt to install boto3
-    print("boto3 not found, installing...")
-    try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet", "boto3>=1.18.0"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        import boto3
-        from botocore.exceptions import ClientError, NoCredentialsError
-
-        print("boto3 installed successfully")
-    except Exception as e:
-        print(f"Warning: Could not install boto3: {e}")
-        print("S3 operations will not be available")
-        boto3 = None
+# boto3 is only required for GitOps mode (S3 uploads)
+# It will be imported lazily when needed to avoid requiring it for direct mode
+boto3 = None
+ClientError = None
+NoCredentialsError = None
 
 # Constants for improved readability
 DEFAULT_PLATFORM = "darwin"
@@ -476,6 +459,20 @@ class FleetImporter(Processor):
 
     def _run_gitops_workflow(self):
         """Run the GitOps workflow: upload to S3, update YAML, create PR."""
+        # Import boto3 for GitOps mode (required for S3 operations)
+        global boto3, ClientError, NoCredentialsError
+        try:
+            import boto3
+            from botocore.exceptions import ClientError, NoCredentialsError
+        except ImportError:
+            raise ProcessorError(
+                "boto3 is required for GitOps mode.\n\n"
+                "Install it into AutoPkg's Python environment with:\n"
+                "  /Library/AutoPkg/Python3/Python.framework/Versions/Current/bin/python3 -m pip install boto3>=1.18.0\n\n"
+                "Or use direct mode to upload directly to Fleet API without S3/GitOps:\n"
+                "  Set gitops_mode to false in your recipe or AutoPkg preferences."
+            )
+
         # Validate inputs
         pkg_path = Path(self.env["pkg_path"]).expanduser().resolve()
         if not pkg_path.is_file():
@@ -1480,24 +1477,33 @@ class FleetImporter(Processor):
             ProcessorError: If clone fails
         """
         temp_dir = tempfile.mkdtemp(prefix="fleetimporter-gitops-")
-
-        # Inject token into HTTPS URL for authentication
-        if repo_url.startswith("https://github.com/"):
-            auth_url = repo_url.replace(
-                "https://github.com/", f"https://{github_token}@github.com/"
-            )
-        else:
-            # Assume token can be used as-is
-            auth_url = repo_url
+        askpass_script = None
 
         try:
-            # Clone repository
+            # Create a temporary GIT_ASKPASS script to provide credentials securely
+            # This avoids embedding tokens in URLs where they could be logged
+            askpass_fd, askpass_script = tempfile.mkstemp(
+                prefix="git-askpass-", suffix=".sh", text=True
+            )
+            os.write(askpass_fd, f'#!/bin/sh\necho "{github_token}"\n'.encode())
+            os.close(askpass_fd)
+            os.chmod(askpass_script, 0o700)
+
+            # Set up minimal environment for git clone
+            git_env = {
+                "GIT_ASKPASS": askpass_script,
+                "GIT_TERMINAL_PROMPT": "0",
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": os.environ.get("HOME", ""),
+            }
+
+            # Clone repository using GIT_ASKPASS for authentication
             subprocess.run(
-                ["git", "clone", auth_url, temp_dir],
+                ["git", "clone", repo_url, temp_dir],
                 check=True,
                 capture_output=True,
                 text=True,
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                env=git_env,
             )
             return temp_dir
         except subprocess.CalledProcessError as e:
@@ -1507,6 +1513,13 @@ class FleetImporter(Processor):
             raise ProcessorError(
                 f"Failed to clone GitOps repository: {e.stderr or e.stdout}"
             )
+        finally:
+            # Clean up the askpass script
+            if askpass_script and os.path.exists(askpass_script):
+                try:
+                    os.unlink(askpass_script)
+                except Exception:
+                    pass  # Best effort cleanup
 
     def _read_yaml(self, yaml_path: Path) -> dict:
         """Read and parse YAML file.
@@ -1713,7 +1726,13 @@ class FleetImporter(Processor):
             ProcessorError: If Git operations fail
         """
         try:
-            git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+            # Use explicit allowlist of environment variables for Git operations
+            # Only pass what Git actually needs, avoiding leakage of secrets
+            git_env = {
+                "GIT_TERMINAL_PROMPT": "0",
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": os.environ.get("HOME", ""),
+            }
 
             # Create and checkout new branch
             subprocess.run(
