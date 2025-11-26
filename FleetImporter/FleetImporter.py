@@ -875,6 +875,45 @@ class FleetImporter(Processor):
                                         f"Found {len(app_bundles)} .app bundle(s) in Payload archive"
                                     )
                                     break
+                                else:
+                                    # Some packages have app bundle contents without the .app wrapper
+                                    # Look for directories containing Contents/Info.plist OR
+                                    # a Contents directory with Info.plist directly inside it
+                                    self.output(
+                                        "No .app bundles found. Checking for unwrapped app bundle contents..."
+                                    )
+                                    for candidate_dir in payload_extract_dir.iterdir():
+                                        if candidate_dir.is_dir():
+                                            # Case 1: Directory contains Contents/Info.plist
+                                            info_plist = (
+                                                candidate_dir
+                                                / "Contents"
+                                                / "Info.plist"
+                                            )
+                                            if info_plist.exists():
+                                                self.output(
+                                                    f"Found unwrapped app bundle contents at: {candidate_dir}"
+                                                )
+                                                # Treat this as an app bundle (the directory containing Contents/)
+                                                app_bundles.append(candidate_dir)
+                                                break
+
+                                            # Case 2: Directory IS the Contents directory with Info.plist inside
+                                            if candidate_dir.name == "Contents":
+                                                info_plist = (
+                                                    candidate_dir / "Info.plist"
+                                                )
+                                                if info_plist.exists():
+                                                    self.output(
+                                                        f"Found Contents directory directly at: {candidate_dir}"
+                                                    )
+                                                    # Treat the parent directory as the app bundle
+                                                    app_bundles.append(
+                                                        payload_extract_dir
+                                                    )
+                                                    break
+                                    if app_bundles:
+                                        break
                         except Exception as e:
                             self.output(f"Warning: Could not extract Payload: {e}")
                             continue
@@ -938,15 +977,27 @@ class FleetImporter(Processor):
         """Extract icon from an .app bundle and convert to PNG.
 
         Args:
-            app_bundle: Path to .app bundle
+            app_bundle: Path to .app bundle or directory containing Contents/
             temp_dir: Temporary directory for output
 
         Returns:
             Path to PNG icon file, or None if extraction fails
         """
         try:
-            # Read Info.plist to find icon file name
+            # Handle both .app bundles and unwrapped app bundle contents
+            # Check if we have Contents/Info.plist directly (unwrapped bundle)
             info_plist = app_bundle / "Contents" / "Info.plist"
+            if not info_plist.exists():
+                # Maybe we were passed the Contents directory itself?
+                # This shouldn't happen with current code, but handle it for robustness
+                if (
+                    app_bundle.name == "Contents"
+                    and (app_bundle / "Info.plist").exists()
+                ):
+                    # Adjust app_bundle to be the parent directory
+                    app_bundle = app_bundle.parent
+                    info_plist = app_bundle / "Contents" / "Info.plist"
+
             if not info_plist.exists():
                 self.output(f"Warning: Info.plist not found in {app_bundle.name}")
                 return None
