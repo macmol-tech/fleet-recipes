@@ -38,7 +38,7 @@ Process:
     pkg_path: "%pathname%"
     software_title: "%NAME%"
     version: "%version%"
-
+    display_name: "%NAME%"
     # Optional: Icon settings
     icon: "%ICON%"
 

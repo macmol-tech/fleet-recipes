@@ -29,6 +29,7 @@ Process:
     pkg_path: "%pkg_path%"
     software_title: "%NAME%"
     version: "%version%"
+    display_name: "%NAME%"
     icon: "%ICON%"
     install_script: "%INSTALL_SCRIPT%"
     uninstall_script: "%UNINSTALL_SCRIPT%"

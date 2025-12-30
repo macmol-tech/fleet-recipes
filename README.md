@@ -40,6 +40,7 @@ FleetImporter recipes support the following variables. Configuration can be set 
 | `pkg_path` | Required | Required | - | Path to the .pkg file (typically from parent recipe) |
 | `software_title` | Required | Required | - | Software display name |
 | `version` | Required | Required | - | Software version (typically from parent recipe) |
+| `display_name` | Optional | Optional | `software_title` | Custom display name for the software package in Fleet |
 | **Fleet API (Direct Mode)** | | | | |
 | `FLEET_API_BASE` | Required | Not used | - | Fleet server URL (e.g., `https://fleet.example.com`) |
 | `FLEET_API_TOKEN` | Required | Not used | - | Fleet API authentication token |
