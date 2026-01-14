@@ -53,6 +53,7 @@ FleetImporter recipes support the following variables. Configuration can be set 
 | `FLEET_GITOPS_GITHUB_TOKEN` | Not used | Required | - | GitHub token with repository write permissions |
 | `FLEET_GITOPS_SOFTWARE_DIR` | Not used | Optional | `lib/macos/software` | Directory for software YAML files in GitOps repo |
 | `FLEET_GITOPS_TEAM_YAML_PATH` | Not used | Optional | `teams/workstations.yml` | Path to team YAML file in GitOps repo |
+| `FLEET_GITOPS_PR_BASE` | Not used | Optional | `main` | Base branch for pull requests |
 | **Software Configuration** | | | | |
 | `self_service` | Optional | Optional | `true` | Show software in Fleet Desktop |
 | `automatic_install` | Optional | Optional | `false` | Auto-install on matching devices |
