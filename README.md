@@ -178,7 +178,7 @@ When `AUTO_UPDATE_ENABLED` is set to `true`, FleetImporter:
 1. **Builds version query**: Creates an osquery SQL query that detects hosts running outdated versions:
    ```sql
    SELECT 1 WHERE EXISTS (
-     SELECT 1 FROM apps WHERE bundle_identifier = '<YOUR_APP_BUNDLE_ID>' AND version_compare(bundle_short_version, '<REQUIRED_VERSION>') != 0
+     SELECT 1 FROM apps WHERE bundle_identifier = '<YOUR_APP_BUNDLE_ID>' AND version_compare(bundle_short_version, '<REQUIRED_VERSION>') < 0
    );
    ```
 
