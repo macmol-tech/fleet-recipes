@@ -37,6 +37,7 @@ Input:
   # GitOps-specific options
   FLEET_GITOPS_SOFTWARE_DIR: lib/macos/software
   FLEET_GITOPS_TEAM_YAML_PATH: teams/workstations.yml
+  FLEET_GITOPS_PR_BASE: main
   s3_retention_versions: 0
 
 Process:
@@ -77,4 +78,5 @@ Process:
     aws_default_region: "%AWS_DEFAULT_REGION%"
     gitops_repo_url: "%FLEET_GITOPS_REPO_URL%"
     github_token: "%FLEET_GITOPS_GITHUB_TOKEN%"
+    gitops_pr_base: "%FLEET_GITOPS_PR_BASE%"
   Processor: com.github.fleet.FleetImporter/FleetImporter
