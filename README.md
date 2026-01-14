@@ -68,6 +68,7 @@ FleetImporter recipes support the following variables. Configuration can be set 
 | **Auto-Update Policies** | | | | |
 | `AUTO_UPDATE_ENABLED` | Optional | Optional | `false` | Create/update policies for automatic version detection and installation |
 | `AUTO_UPDATE_POLICY_NAME` | Optional | Optional | `autopkg-auto-update-%NAME%` | Policy name template (%NAME% replaced with slugified software title) |
+| `AUTO_UPDATE_POLICY_QUERY` | Optional | Optional | - | Custom osquery for version detection. Use `%VERSION%` placeholder. If not specified, auto-extracts bundle ID from package |
 | **GitOps-Specific Options** | | | | |
 | `s3_retention_versions` | Not used | Optional | `0` | Number of old package versions to retain in S3 (0 = no pruning) |
 
@@ -188,7 +189,21 @@ When `AUTO_UPDATE_ENABLED` is set to `true`, FleetImporter:
    - Link to install package automatically on policy failure
    - Platform targeting (macOS only)
 
-3. **Creates policy YAML** (GitOps mode): Writes policy definition to `lib/policies/` 
+3. **Creates policy YAML** (GitOps mode): Writes policy definition to `lib/policies/` with structure:
+   ```yaml
+   name: autopkg-auto-update-github-desktop
+   query: |
+     SELECT 1 WHERE EXISTS (
+       SELECT 1 FROM apps WHERE bundle_identifier = 'com.github.GitHubClient'
+       AND version_compare(bundle_short_version, '3.4.5') < 0
+     );
+   description: Auto-update policy for GitHub Desktop. Managed by AutoPkg.
+   resolution: This device will automatically install GitHub Desktop 3.4.5
+   platform: darwin
+   critical: false
+   install_software:
+     name: GitHub Desktop  # Fleet resolves this to software_title_id
+   ```
 
 ### Policy naming
 
