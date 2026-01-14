@@ -24,6 +24,8 @@ Input:
   labels_exclude_any: []
 
   # Optional: Auto-update policy automation
+  # To find bundle ID: mdls -name kMDItemCFBundleIdentifier /Applications/YourApp.app
+  # Or leave AUTO_UPDATE_POLICY_QUERY empty to auto-extract from package
   AUTO_UPDATE_ENABLED: false
   AUTO_UPDATE_POLICY_NAME: "autopkg-auto-update-%NAME%"
   AUTO_UPDATE_POLICY_QUERY: |
