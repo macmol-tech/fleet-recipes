@@ -17,8 +17,8 @@ import re
 import shutil
 import ssl
 import subprocess
-import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -30,27 +30,11 @@ from autopkglib import Processor, ProcessorError
 
 __all__ = ["FleetImporter"]
 
-# Try to import boto3, install if not available
-try:
-    import boto3
-    from botocore.exceptions import ClientError, NoCredentialsError
-except ImportError:
-    # Attempt to install boto3
-    print("boto3 not found, installing...")
-    try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet", "boto3>=1.18.0"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        import boto3
-        from botocore.exceptions import ClientError, NoCredentialsError
-
-        print("boto3 installed successfully")
-    except Exception as e:
-        print(f"Warning: Could not install boto3: {e}")
-        print("S3 operations will not be available")
-        boto3 = None
+# boto3 is only required for GitOps mode (S3 uploads)
+# It will be imported lazily when needed to avoid requiring it for direct mode
+boto3 = None
+ClientError = None
+NoCredentialsError = None
 
 # Constants for improved readability
 DEFAULT_PLATFORM = "darwin"
@@ -184,12 +168,12 @@ class FleetImporter(Processor):
         "install_script": {
             "required": False,
             "default": "",
-            "description": "Custom install script body (string).",
+            "description": "Custom install script - either inline script body (string) or path to .sh file (relative to recipe dir or absolute).",
         },
         "uninstall_script": {
             "required": False,
             "default": "",
-            "description": "Custom uninstall script body (string).",
+            "description": "Custom uninstall script - either inline script body (string) or path to .sh file (relative to recipe dir or absolute).",
         },
         "icon": {
             "required": False,
@@ -204,12 +188,17 @@ class FleetImporter(Processor):
         "post_install_script": {
             "required": False,
             "default": "",
-            "description": "Post-install script body (string).",
+            "description": "Post-install script - either inline script body (string) or path to .sh file (relative to recipe dir or absolute).",
         },
         "categories": {
             "required": False,
             "default": [],
             "description": "List of category names to group self-service software in Fleet Desktop (e.g., ['Productivity', 'Browser']).",
+        },
+        "display_name": {
+            "required": False,
+            "default": "",
+            "description": "Custom display name for the software in Fleet (e.g., 'CrowdStrike Falcon' instead of 'Falcon.app'). If not provided, Fleet will use the software_title.",
         },
         # --- Auto-update policy options ---
         "auto_update_enabled": {
@@ -614,10 +603,55 @@ class FleetImporter(Processor):
         labels_include_any = list(self.env.get("labels_include_any", []))
         labels_exclude_any = list(self.env.get("labels_exclude_any", []))
         categories = list(self.env.get("categories", []))
-        install_script = self.env.get("install_script", "")
-        uninstall_script = self.env.get("uninstall_script", "")
+
+        # Display name: optional custom display name for Fleet UI
+        # If not provided, use software_title as default
+        display_name = self.env.get("display_name", "").strip()
+        if not display_name:
+            display_name = software_title
+
+        # Read script files if paths are provided, otherwise use inline content
+        install_script_input = self.env.get("install_script", "")
+        uninstall_script_input = self.env.get("uninstall_script", "")
         pre_install_query = self.env.get("pre_install_query", "")
-        post_install_script = self.env.get("post_install_script", "")
+        post_install_script_input = self.env.get("post_install_script", "")
+
+        # Check if inputs look like file paths (end with .sh or contain /) or inline scripts
+        # If they look like paths, read the file content
+        install_script = (
+            self._read_script_file(install_script_input)
+            if (
+                install_script_input
+                and (
+                    install_script_input.endswith(".sh") or "/" in install_script_input
+                )
+            )
+            else install_script_input
+        )
+
+        uninstall_script = (
+            self._read_script_file(uninstall_script_input)
+            if (
+                uninstall_script_input
+                and (
+                    uninstall_script_input.endswith(".sh")
+                    or "/" in uninstall_script_input
+                )
+            )
+            else uninstall_script_input
+        )
+
+        post_install_script = (
+            self._read_script_file(post_install_script_input)
+            if (
+                post_install_script_input
+                and (
+                    post_install_script_input.endswith(".sh")
+                    or "/" in post_install_script_input
+                )
+            )
+            else post_install_script_input
+        )
 
         # Validate label targeting - only one of include/exclude allowed
         if labels_include_any and labels_exclude_any:
@@ -685,6 +719,7 @@ class FleetImporter(Processor):
             pre_install_query,
             post_install_script,
             categories,
+            display_name,
         )
 
         if not upload_info:
@@ -764,7 +799,12 @@ class FleetImporter(Processor):
                 finally:
                     # Clean up extracted icon temp directory
                     if extracted_icon_path.parent.exists():
-                        shutil.rmtree(extracted_icon_path.parent, ignore_errors=True)
+                        try:
+                            shutil.rmtree(extracted_icon_path.parent)
+                        except Exception as e:
+                            self.output(
+                                f"Warning: Failed to cleanup icon temp dir: {e}"
+                            )
             else:
                 self.output(
                     "Could not extract icon from package. Skipping icon upload."
@@ -798,6 +838,20 @@ class FleetImporter(Processor):
 
     def _run_gitops_workflow(self):
         """Run the GitOps workflow: upload to S3, update YAML, create PR."""
+        # Import boto3 for GitOps mode (required for S3 operations)
+        global boto3, ClientError, NoCredentialsError
+        try:
+            import boto3
+            from botocore.exceptions import ClientError, NoCredentialsError
+        except ImportError:
+            raise ProcessorError(
+                "boto3 is required for GitOps mode.\n\n"
+                "Install it into AutoPkg's Python environment with:\n"
+                "  /Library/AutoPkg/Python3/Python.framework/Versions/Current/bin/python3 -m pip install boto3>=1.18.0\n\n"
+                "Or use direct mode to upload directly to Fleet API without S3/GitOps:\n"
+                "  Set gitops_mode to false in your recipe or AutoPkg preferences."
+            )
+
         # Validate inputs
         pkg_path = Path(self.env["pkg_path"]).expanduser().resolve()
         if not pkg_path.is_file():
@@ -836,10 +890,56 @@ class FleetImporter(Processor):
         labels_include_any = list(self.env.get("labels_include_any", []))
         labels_exclude_any = list(self.env.get("labels_exclude_any", []))
         categories = list(self.env.get("categories", []))
-        install_script = self.env.get("install_script", "")
-        uninstall_script = self.env.get("uninstall_script", "")
+
+        # Display name: optional custom display name for Fleet UI
+        # If not provided, use software_title as default
+        display_name = self.env.get("display_name", "").strip()
+        if not display_name:
+            display_name = software_title
+
+        # Read script files if paths are provided, otherwise use inline content
+        install_script_input = self.env.get("install_script", "")
+        uninstall_script_input = self.env.get("uninstall_script", "")
         pre_install_query = self.env.get("pre_install_query", "")
-        post_install_script = self.env.get("post_install_script", "")
+        post_install_script_input = self.env.get("post_install_script", "")
+
+        # Check if inputs look like file paths (end with .sh or contain /) or inline scripts
+        # If they look like paths, read the file content
+        install_script = (
+            self._read_script_file(install_script_input)
+            if (
+                install_script_input
+                and (
+                    install_script_input.endswith(".sh") or "/" in install_script_input
+                )
+            )
+            else install_script_input
+        )
+
+        uninstall_script = (
+            self._read_script_file(uninstall_script_input)
+            if (
+                uninstall_script_input
+                and (
+                    uninstall_script_input.endswith(".sh")
+                    or "/" in uninstall_script_input
+                )
+            )
+            else uninstall_script_input
+        )
+
+        post_install_script = (
+            self._read_script_file(post_install_script_input)
+            if (
+                post_install_script_input
+                and (
+                    post_install_script_input.endswith(".sh")
+                    or "/" in post_install_script_input
+                )
+            )
+            else post_install_script_input
+        )
+
         icon_path_str = self.env.get("icon", "").strip()
 
         # Validate label targeting - only one of include/exclude allowed
@@ -943,6 +1043,7 @@ class FleetImporter(Processor):
                 pre_install_query,
                 post_install_script,
                 icon_relative_path,
+                display_name,
             )
 
             # Update team YAML file to reference the package
@@ -1011,11 +1112,17 @@ class FleetImporter(Processor):
         finally:
             # Clean up extracted icon temp directory
             if extracted_icon_path and extracted_icon_path.parent.exists():
-                shutil.rmtree(extracted_icon_path.parent, ignore_errors=True)
+                try:
+                    shutil.rmtree(extracted_icon_path.parent)
+                except Exception as e:
+                    self.output(f"Warning: Failed to cleanup icon temp dir: {e}")
             # Always clean up temporary directory
             if temp_dir and Path(temp_dir).exists():
                 self.output(f"Cleaning up temporary directory: {temp_dir}")
-                shutil.rmtree(temp_dir, ignore_errors=True)
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception as e:
+                    self.output(f"Warning: Failed to cleanup temp dir: {e}")
 
     # ------------------- helpers -------------------
 
@@ -1032,6 +1139,51 @@ class FleetImporter(Processor):
         slug = re.sub(r"[^a-z0-9]+", "-", text.lower())
         # Remove leading/trailing hyphens
         return slug.strip("-")
+
+    def _read_script_file(self, script_path_str: str) -> str:
+        """Read script content from a file path.
+
+        Args:
+            script_path_str: Path to script file (relative or absolute)
+
+        Returns:
+            Script content as string, or empty string if file not found
+
+        Notes:
+            - If path is relative, resolves relative to recipe directory
+            - Returns empty string if file doesn't exist (with warning)
+        """
+        if not script_path_str:
+            return ""
+
+        script_path = Path(script_path_str)
+
+        # Resolve relative paths relative to recipe directory
+        if not script_path.is_absolute():
+            recipe_dir = self.env.get("RECIPE_DIR")
+            if recipe_dir:
+                script_path = (Path(recipe_dir) / script_path_str).resolve()
+            else:
+                script_path = script_path.expanduser().resolve()
+        else:
+            script_path = script_path.expanduser().resolve()
+
+        if script_path.exists():
+            try:
+                with open(script_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                self.output(f"Read script file: {script_path}")
+                return content
+            except Exception as e:
+                self.output(
+                    f"Warning: Could not read script file {script_path}: {e}. Using empty script."
+                )
+                return ""
+        else:
+            self.output(
+                f"Warning: Script file not found: {script_path}. Using empty script."
+            )
+            return ""
 
     def _extract_icon_from_pkg(self, pkg_path: Path) -> Path | None:
         """Extract and convert app icon from a package to PNG format.
@@ -1050,8 +1202,8 @@ class FleetImporter(Processor):
             temp_dir = Path(tempfile.mkdtemp(prefix="fleetimporter-icon-"))
 
             # First, expand the pkg to find the app bundle
+            # Note: pkgutil --expand will create the target directory, so don't create it beforehand
             pkg_expand_dir = temp_dir / "pkg_contents"
-            pkg_expand_dir.mkdir()
 
             self.output(f"Expanding package to find app bundle: {pkg_path.name}")
             result = subprocess.run(
@@ -1069,9 +1221,117 @@ class FleetImporter(Processor):
 
             # Find .app bundles within the expanded package
             app_bundles = list(pkg_expand_dir.rglob("*.app"))
+
+            # If no .app bundles found directly, check for Payload archives
             if not app_bundles:
                 self.output(
-                    "Warning: No .app bundle found in package. Skipping icon extraction."
+                    "No .app bundle found directly in package. Checking Payload archives..."
+                )
+                payload_files = list(pkg_expand_dir.rglob("Payload"))
+
+                for payload_file in payload_files:
+                    if payload_file.is_file():
+                        self.output(f"Found Payload archive: {payload_file}")
+                        # Extract Payload archive to find .app bundles
+                        payload_extract_dir = temp_dir / "payload_extracted"
+                        payload_extract_dir.mkdir(exist_ok=True)
+
+                        try:
+                            # Try to extract as gzip compressed tar (most common)
+                            result = subprocess.run(
+                                [
+                                    "tar",
+                                    "-xzf",
+                                    str(payload_file),
+                                    "-C",
+                                    str(payload_extract_dir),
+                                ],
+                                capture_output=True,
+                                text=True,
+                            )
+
+                            if result.returncode != 0:
+                                # Try as bzip2 compressed tar
+                                result = subprocess.run(
+                                    [
+                                        "tar",
+                                        "-xjf",
+                                        str(payload_file),
+                                        "-C",
+                                        str(payload_extract_dir),
+                                    ],
+                                    capture_output=True,
+                                    text=True,
+                                )
+
+                            if result.returncode != 0:
+                                # Try as uncompressed tar
+                                result = subprocess.run(
+                                    [
+                                        "tar",
+                                        "-xf",
+                                        str(payload_file),
+                                        "-C",
+                                        str(payload_extract_dir),
+                                    ],
+                                    capture_output=True,
+                                    text=True,
+                                )
+
+                            if result.returncode == 0:
+                                # Search for .app bundles in extracted payload
+                                app_bundles = list(payload_extract_dir.rglob("*.app"))
+                                if app_bundles:
+                                    self.output(
+                                        f"Found {len(app_bundles)} .app bundle(s) in Payload archive"
+                                    )
+                                    break
+                                else:
+                                    # Some packages have app bundle contents without the .app wrapper
+                                    # Look for directories containing Contents/Info.plist OR
+                                    # a Contents directory with Info.plist directly inside it
+                                    self.output(
+                                        "No .app bundles found. Checking for unwrapped app bundle contents..."
+                                    )
+                                    for candidate_dir in payload_extract_dir.iterdir():
+                                        if candidate_dir.is_dir():
+                                            # Case 1: Directory contains Contents/Info.plist
+                                            info_plist = (
+                                                candidate_dir
+                                                / "Contents"
+                                                / "Info.plist"
+                                            )
+                                            if info_plist.exists():
+                                                self.output(
+                                                    f"Found unwrapped app bundle contents at: {candidate_dir}"
+                                                )
+                                                # Treat this as an app bundle (the directory containing Contents/)
+                                                app_bundles.append(candidate_dir)
+                                                break
+
+                                            # Case 2: Directory IS the Contents directory with Info.plist inside
+                                            if candidate_dir.name == "Contents":
+                                                info_plist = (
+                                                    candidate_dir / "Info.plist"
+                                                )
+                                                if info_plist.exists():
+                                                    self.output(
+                                                        f"Found Contents directory directly at: {candidate_dir}"
+                                                    )
+                                                    # Treat the parent directory as the app bundle
+                                                    app_bundles.append(
+                                                        payload_extract_dir
+                                                    )
+                                                    break
+                                    if app_bundles:
+                                        break
+                        except Exception as e:
+                            self.output(f"Warning: Could not extract Payload: {e}")
+                            continue
+
+            if not app_bundles:
+                self.output(
+                    "Warning: No .app bundle found in package or Payload archives. Skipping icon extraction."
                 )
                 shutil.rmtree(temp_dir, ignore_errors=True)
                 return None
@@ -1128,57 +1388,152 @@ class FleetImporter(Processor):
         """Extract icon from an .app bundle and convert to PNG.
 
         Args:
-            app_bundle: Path to .app bundle
+            app_bundle: Path to .app bundle or directory containing Contents/
             temp_dir: Temporary directory for output
 
         Returns:
             Path to PNG icon file, or None if extraction fails
         """
         try:
-            # Read Info.plist to find icon file name
+            # Handle both .app bundles and unwrapped app bundle contents
+            # Check if we have Contents/Info.plist directly (unwrapped bundle)
             info_plist = app_bundle / "Contents" / "Info.plist"
+            if not info_plist.exists():
+                # Maybe we were passed the Contents directory itself?
+                # This shouldn't happen with current code, but handle it for robustness
+                if (
+                    app_bundle.name == "Contents"
+                    and (app_bundle / "Info.plist").exists()
+                ):
+                    # Adjust app_bundle to be the parent directory
+                    app_bundle = app_bundle.parent
+                    info_plist = app_bundle / "Contents" / "Info.plist"
+
             if not info_plist.exists():
                 self.output(f"Warning: Info.plist not found in {app_bundle.name}")
                 return None
 
-            # Use plutil to read icon file name
+            icon_file = None
+
+            # Try CFBundleIconFile first (legacy .icns approach)
             result = subprocess.run(
                 ["plutil", "-extract", "CFBundleIconFile", "raw", str(info_plist)],
                 capture_output=True,
                 text=True,
             )
 
-            if result.returncode != 0:
-                self.output(
-                    f"Warning: Could not read CFBundleIconFile from Info.plist: {result.stderr}"
+            if result.returncode == 0 and result.stdout.strip():
+                icon_name = result.stdout.strip()
+                # Add .icns extension if not present
+                if not icon_name.endswith(".icns"):
+                    icon_name += ".icns"
+
+                # Find the icon file in the app bundle
+                icon_file = app_bundle / "Contents" / "Resources" / icon_name
+                if not icon_file.exists():
+                    # Try without extension
+                    icon_name_no_ext = icon_name.replace(".icns", "")
+                    icon_file = (
+                        app_bundle
+                        / "Contents"
+                        / "Resources"
+                        / f"{icon_name_no_ext}.icns"
+                    )
+
+                if icon_file.exists():
+                    self.output(f"Found icon file: {icon_file.name}")
+                else:
+                    icon_file = None
+
+            # If CFBundleIconFile not found, try CFBundleIconName (modern asset catalog approach)
+            if not icon_file:
+                result = subprocess.run(
+                    ["plutil", "-extract", "CFBundleIconName", "raw", str(info_plist)],
+                    capture_output=True,
+                    text=True,
                 )
+
+                if result.returncode == 0 and result.stdout.strip():
+                    icon_name = result.stdout.strip()
+                    self.output(
+                        f"App uses asset catalog (CFBundleIconName: {icon_name}). Searching for icon..."
+                    )
+                    resources_dir = app_bundle / "Contents" / "Resources"
+
+                    # First try: Look for .icns files in Resources
+                    icns_files = list(resources_dir.glob("*.icns"))
+                    if icns_files:
+                        icon_file = icns_files[0]
+                        self.output(f"Found icon file: {icon_file.name}")
+
+                    # Second try: Use macOS icon services via Python/Cocoa to extract icon
+                    if not icon_file:
+                        self.output(
+                            "No .icns file found. Attempting to extract icon using macOS icon services..."
+                        )
+                        temp_png = (
+                            Path(tempfile.gettempdir()) / f"{app_bundle.stem}_icon.png"
+                        )
+                        try:
+                            # Use Python with Cocoa (PyObjC) to get the app's icon
+                            # This is available in macOS's system Python
+                            import Cocoa
+
+                            workspace = Cocoa.NSWorkspace.sharedWorkspace()
+                            app_icon = workspace.iconForFile_(str(app_bundle))
+
+                            if app_icon:
+                                # Get the largest representation (usually 512x512 or 1024x1024)
+                                tiff_data = app_icon.TIFFRepresentation()
+                                bitmap_rep = Cocoa.NSBitmapImageRep.imageRepWithData_(
+                                    tiff_data
+                                )
+
+                                # Convert to PNG
+                                png_data = (
+                                    bitmap_rep.representationUsingType_properties_(
+                                        Cocoa.NSBitmapImageFileTypePNG, None
+                                    )
+                                )
+
+                                # Write PNG file
+                                png_data.writeToFile_atomically_(str(temp_png), True)
+
+                                if temp_png.exists() and temp_png.stat().st_size > 0:
+                                    icon_file = temp_png
+                                    self.output(
+                                        f"Successfully extracted icon using macOS icon services ({temp_png.stat().st_size} bytes)"
+                                    )
+                                else:
+                                    self.output("Warning: Icon file created but empty")
+                            else:
+                                self.output(
+                                    "Warning: Could not get app icon from macOS"
+                                )
+
+                        except ImportError:
+                            self.output(
+                                "Warning: PyObjC (Cocoa module) not available. Cannot extract icon from asset catalog."
+                            )
+                        except Exception as e:
+                            self.output(f"Warning: Error extracting icon: {str(e)}")
+                            if temp_png.exists():
+                                temp_png.unlink()
+
+                    if not icon_file:
+                        self.output(
+                            f"Warning: Could not find or extract icon for {app_bundle.name}"
+                        )
+                        return None
+                else:
+                    self.output(
+                        f"Warning: Neither CFBundleIconFile nor CFBundleIconName found in Info.plist for {app_bundle.name}"
+                    )
+                    return None
+
+            if not icon_file or not icon_file.exists():
+                self.output(f"Warning: Icon file not found in {app_bundle.name}")
                 return None
-
-            icon_name = result.stdout.strip()
-            if not icon_name:
-                self.output("Warning: CFBundleIconFile is empty in Info.plist")
-                return None
-
-            # Add .icns extension if not present
-            if not icon_name.endswith(".icns"):
-                icon_name += ".icns"
-
-            # Find the icon file in the app bundle
-            icon_file = app_bundle / "Contents" / "Resources" / icon_name
-            if not icon_file.exists():
-                # Try without extension
-                icon_name_no_ext = icon_name.replace(".icns", "")
-                icon_file = (
-                    app_bundle / "Contents" / "Resources" / f"{icon_name_no_ext}.icns"
-                )
-
-            if not icon_file.exists():
-                self.output(
-                    f"Warning: Icon file not found: {icon_name} in {app_bundle.name}"
-                )
-                return None
-
-            self.output(f"Found icon file: {icon_file.name}")
 
             # Convert .icns to PNG using sips (macOS built-in tool)
             output_png = temp_dir / "icon.png"
@@ -1669,24 +2024,33 @@ class FleetImporter(Processor):
             ProcessorError: If clone fails
         """
         temp_dir = tempfile.mkdtemp(prefix="fleetimporter-gitops-")
-
-        # Inject token into HTTPS URL for authentication
-        if repo_url.startswith("https://github.com/"):
-            auth_url = repo_url.replace(
-                "https://github.com/", f"https://{github_token}@github.com/"
-            )
-        else:
-            # Assume token can be used as-is
-            auth_url = repo_url
+        askpass_script = None
 
         try:
-            # Clone repository
+            # Create a temporary GIT_ASKPASS script to provide credentials securely
+            # This avoids embedding tokens in URLs where they could be logged
+            askpass_fd, askpass_script = tempfile.mkstemp(
+                prefix="git-askpass-", suffix=".sh", text=True
+            )
+            os.write(askpass_fd, f'#!/bin/sh\necho "{github_token}"\n'.encode())
+            os.close(askpass_fd)
+            os.chmod(askpass_script, 0o700)
+
+            # Set up minimal environment for git clone
+            git_env = {
+                "GIT_ASKPASS": askpass_script,
+                "GIT_TERMINAL_PROMPT": "0",
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": os.environ.get("HOME", ""),
+            }
+
+            # Clone repository using GIT_ASKPASS for authentication
             subprocess.run(
-                ["git", "clone", auth_url, temp_dir],
+                ["git", "clone", repo_url, temp_dir],
                 check=True,
                 capture_output=True,
                 text=True,
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                env=git_env,
             )
             return temp_dir
         except subprocess.CalledProcessError as e:
@@ -1696,6 +2060,13 @@ class FleetImporter(Processor):
             raise ProcessorError(
                 f"Failed to clone GitOps repository: {e.stderr or e.stdout}"
             )
+        finally:
+            # Clean up the askpass script
+            if askpass_script and os.path.exists(askpass_script):
+                try:
+                    os.unlink(askpass_script)
+                except Exception:
+                    pass  # Best effort cleanup
 
     def _read_yaml(self, yaml_path: Path) -> dict:
         """Read and parse YAML file.
@@ -1752,6 +2123,7 @@ class FleetImporter(Processor):
         pre_install_query: str,
         post_install_script: str,
         icon_path: str = None,
+        display_name: str = "",
     ) -> str:
         """Create software package YAML file in lib/ directory.
 
@@ -1766,6 +2138,7 @@ class FleetImporter(Processor):
             pre_install_query: Pre-install query
             post_install_script: Post-install script
             icon_path: Relative path to icon file in GitOps repo (e.g., ../icons/claude.png)
+            display_name: Custom display name for the software in Fleet UI
 
         Returns:
             Relative path to created package YAML file (for use in team YAML)
@@ -1783,6 +2156,10 @@ class FleetImporter(Processor):
             "url": cloudfront_url,
             "hash_sha256": hash_sha256,
         }
+
+        # Add optional display name if provided
+        if display_name:
+            package_entry["display_name"] = display_name
 
         # Add optional icon path if provided
         if icon_path:
@@ -1904,7 +2281,13 @@ class FleetImporter(Processor):
             ProcessorError: If Git operations fail
         """
         try:
-            git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+            # Use explicit allowlist of environment variables for Git operations
+            # Only pass what Git actually needs, avoiding leakage of secrets
+            git_env = {
+                "GIT_TERMINAL_PROMPT": "0",
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": os.environ.get("HOME", ""),
+            }
 
             # Create and checkout new branch
             subprocess.run(
@@ -2348,6 +2731,7 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
         pre_install_query: str,
         post_install_script: str,
         categories: list[str],
+        display_name: str = "",
     ) -> dict:
         url = f"{base_url}/api/v1/fleet/software/package"
         self.output(f"Uploading file to Fleet: {pkg_path}")
@@ -2380,6 +2764,8 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
 
         write_field("team_id", str(team_id))
         write_field("self_service", json.dumps(bool(self_service)).lower())
+        if display_name:
+            write_field("display_name", display_name)
         if install_script:
             write_field("install_script", install_script)
         if uninstall_script:
@@ -2428,7 +2814,12 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
         self, base_url: str, token: str, title_id: int, team_id: int, icon_path: Path
     ) -> None:
         """
-        Upload a software icon to Fleet.
+        Upload a software icon to Fleet with retry logic for race condition errors.
+
+        Fleet has a known issue (#33917, #34281, #36090) where icon uploads can fail
+        with "500 sql: no rows in result set" due to a race condition in activity
+        logging. The icon usually uploads successfully despite the error, but the
+        activity feed entry fails. Retrying after a brief delay typically succeeds.
 
         Args:
             base_url: Fleet base URL
@@ -2482,24 +2873,57 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
             "Content-Type": f"multipart/form-data; boundary={boundary}",
         }
 
-        req = urllib.request.Request(
-            url, data=body.getvalue(), headers=headers, method="PUT"
-        )
+        # Retry logic to work around Fleet race condition bug
+        max_retries = 3
+        retry_delays = [2, 4, 8]  # Exponential backoff: 2s, 4s, 8s
 
-        try:
-            with urllib.request.urlopen(
-                req, timeout=FLEET_VERSION_TIMEOUT, context=self._get_ssl_context()
-            ) as resp:
-                status = resp.getcode()
-        except urllib.error.HTTPError as e:
-            raise ProcessorError(
-                f"Fleet icon upload failed: {e.code} {e.read().decode()}"
+        last_error = None
+        for attempt in range(max_retries):
+            if attempt > 0:
+                delay = retry_delays[attempt - 1]
+                self.output(
+                    f"Retrying icon upload after {delay}s delay (attempt {attempt + 1}/{max_retries})..."
+                )
+                time.sleep(delay)
+
+            req = urllib.request.Request(
+                url, data=body.getvalue(), headers=headers, method="PUT"
             )
 
-        if status != 200:
-            raise ProcessorError(f"Fleet icon upload failed with status: {status}")
+            try:
+                with urllib.request.urlopen(
+                    req, timeout=FLEET_VERSION_TIMEOUT, context=self._get_ssl_context()
+                ) as resp:
+                    status = resp.getcode()
 
-        self.output(f"Icon uploaded successfully for software title ID: {title_id}")
+                if status != 200:
+                    last_error = f"Fleet icon upload failed with status: {status}"
+                    continue
+
+                self.output(
+                    f"Icon uploaded successfully for software title ID: {title_id}"
+                )
+                return  # Success!
+
+            except urllib.error.HTTPError as e:
+                error_body = e.read().decode()
+                # Check if this is the known race condition error
+                if e.code == 500 and "sql: no rows in result set" in error_body:
+                    last_error = f"Fleet race condition error (known bug): {error_body}"
+                    self.output(
+                        f"Encountered Fleet race condition bug on attempt {attempt + 1}/{max_retries}"
+                    )
+                    continue  # Retry
+                else:
+                    # Different error - don't retry
+                    raise ProcessorError(
+                        f"Fleet icon upload failed: {e.code} {error_body}"
+                    )
+
+        # All retries exhausted
+        raise ProcessorError(
+            f"Fleet icon upload failed after {max_retries} attempts. Last error: {last_error}"
+        )
 
 
 if __name__ == "__main__":

@@ -19,9 +19,11 @@ Mode is controlled by the `GITOPS_MODE` input variable (default: `false`). Users
 
 - **Python 3.9+**: Required by FleetImporter processor
 - **AutoPkg 2.3+**: Required for recipe execution
-- **boto3 1.18.0+**: Required for GitOps mode S3 operations
-  - Processor attempts automatic installation at import time if not present
-  - If auto-installation fails, GitOps mode will not be available
+- **boto3 1.18.0+**: Required for GitOps mode S3 operations (optional for direct mode)
+  - Must be installed manually into AutoPkg's Python environment:
+    ```bash
+    /Library/AutoPkg/Python3/Python.framework/Versions/Current/bin/python3 -m pip install boto3>=1.18.0
+    ```
   - Direct mode uses only native Python libraries (no external dependencies)
 
 ---
@@ -38,6 +40,7 @@ FleetImporter recipes support the following variables. Configuration can be set 
 | `pkg_path` | Required | Required | - | Path to the .pkg file (typically from parent recipe) |
 | `software_title` | Required | Required | - | Software display name |
 | `version` | Required | Required | - | Software version (typically from parent recipe) |
+| `display_name` | Optional | Optional | `software_title` | Custom display name for the software package in Fleet |
 | **Fleet API (Direct Mode)** | | | | |
 | `FLEET_API_BASE` | Required | Not used | - | Fleet server URL (e.g., `https://fleet.example.com`) |
 | `FLEET_API_TOKEN` | Required | Not used | - | Fleet API authentication token |
@@ -96,20 +99,23 @@ Upload packages to S3 and create GitOps pull requests for Fleet configuration ma
 
 > **Note:** GitOps mode requires you to provide your own S3 bucket and CloudFront distribution. When Fleet operates in GitOps mode, it deletes any packages not defined in the YAML files during sync ([fleetdm/fleet#34137](https://github.com/fleetdm/fleet/issues/34137)). By hosting packages externally and using pull requests, you can stage updates and merge them at your own pace.
 
-> **Dependency:** GitOps mode requires `boto3>=1.18.0` for S3 operations. If not already installed, the processor will automatically install it using pip when GitOps mode is first used.
-
 ### Switching to GitOps mode
 
-To use GitOps mode, create a recipe override and set `GITOPS_MODE: true`:
+**Prerequisites:**
+1. Install boto3 into AutoPkg's Python environment (required for S3 operations):
+   ```bash
+   /Library/AutoPkg/Python3/Python.framework/Versions/Current/bin/python3 -m pip install boto3>=1.18.0
+   ```
 
-```bash
-# Create an override
-autopkg make-override VendorName/SoftwareName.fleet.recipe.yaml
+2. Create a recipe override and set `GITOPS_MODE: true`:
+   ```bash
+   # Create an override
+   autopkg make-override VendorName/SoftwareName.fleet.recipe.yaml
 
-# Edit the override to set GITOPS_MODE: true
-# Then run it
-autopkg run SoftwareName.fleet.recipe.yaml
-```
+   # Edit the override to set GITOPS_MODE: true
+   # Then run it
+   autopkg run SoftwareName.fleet.recipe.yaml
+   ```
 
 ### Required infrastructure
 
@@ -149,6 +155,76 @@ FleetImporter automatically extracts and uploads application icons from `.pkg` f
 - **Format conversion**: Converts macOS `.icns` files to PNG format using the built-in `sips` tool
 - **Fallback**: If extraction fails, continues without an icon (or uses manual `icon` path if provided)
 - **Override**: Specify `icon: path/to/icon.png` in your recipe to use a custom icon instead of auto-extraction
+
+---
+
+## Custom scripts
+
+FleetImporter supports custom install, uninstall, and post-install scripts. Scripts can be provided as **inline content** or as **file paths**.
+
+### Inline scripts
+
+Provide the script content directly in the recipe:
+
+```yaml
+Input:
+  UNINSTALL_SCRIPT: |
+    #!/bin/bash
+    rm -rf "/Applications/MyApp.app"
+    rm -rf "$HOME/Library/Application Support/MyApp"
+```
+
+### Script files
+
+Reference a script file stored alongside the recipe:
+
+```yaml
+Input:
+  UNINSTALL_SCRIPT: uninstall-myapp.sh
+```
+
+FleetImporter automatically detects file paths (scripts ending in `.sh` or containing `/`) and reads the file content. Relative paths are resolved relative to the recipe directory.
+
+**Benefits of script files:**
+- Keeps recipes clean and readable
+- Makes scripts easier to maintain and test independently
+- Supports syntax highlighting in editors
+- Enables script reuse across multiple recipes
+
+### Using scripts with overrides
+
+When creating AutoPkg overrides with `autopkg make-override`, script file references continue to work because:
+
+1. **Script files stay with the original recipe** - The override only changes Input values, not companion files
+2. **Paths resolve to the original recipe directory** - AutoPkg's `RECIPE_DIR` always points to the original recipe location
+3. **You can override with custom scripts** by:
+   - Providing inline script content in your override
+   - Specifying an absolute path to your own script file
+   - Copying the script to your override directory and using a relative path
+
+**Example override customization:**
+
+```yaml
+Input:
+  # Option 1: Use inline script
+  UNINSTALL_SCRIPT: |
+    #!/bin/bash
+    echo "Custom uninstall logic"
+  
+  # Option 2: Use absolute path to custom script
+  UNINSTALL_SCRIPT: /path/to/my-custom-uninstall.sh
+  
+  # Option 3: Default - uses original recipe's script file
+  UNINSTALL_SCRIPT: uninstall-myapp.sh
+```
+
+### Supported script parameters
+
+All three script parameters support both inline and file path modes:
+
+- `install_script`: Custom installation script
+- `uninstall_script`: Custom uninstall script
+- `post_install_script`: Script to run after installation
 
 ---
 
@@ -301,7 +377,7 @@ python3 tests/test_style_guide_compliance.py
 ## Getting help
 
 - Ask questions in the [#autopkg channel](https://macadmins.slack.com/archives/C056155B4) on MacAdmins Slack
-- Open an [issue](https://github.com/kitzy/fleetimporter/issues) for bugs or feature requests
+- Open an [issue](https://github.com/autopkg/fleet-recipes/issues) for bugs or feature requests
 - See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines
 
 ---

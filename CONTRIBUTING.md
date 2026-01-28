@@ -180,6 +180,40 @@ Only include a manual icon file if automatic extraction is not technically possi
 - Named `<SoftwareName>.png`
 - Referenced in recipe as `ICON: <SoftwareName>.png`
 
+### Custom Scripts
+
+Recipes can include custom install, uninstall, and post-install scripts. For maintainability and readability:
+
+**Use separate script files when:**
+- Script is longer than 3-5 lines
+- Script contains complex logic or multiple operations
+- Script may be reused or referenced by other recipes
+
+**Use inline scripts when:**
+- Script is very short (1-2 lines)
+- Script is simple and self-explanatory
+
+**Script file guidelines:**
+- Store script files in the same vendor directory as the recipe (e.g., `VendorName/uninstall-softwarename.sh`)
+- Use descriptive filenames: `install-<softwarename>.sh`, `uninstall-<softwarename>.sh`, etc.
+- Include a shebang line (`#!/bin/bash`) at the top of the script
+- Add comments explaining what the script does
+- Reference in recipe using relative path: `UNINSTALL_SCRIPT: uninstall-softwarename.sh`
+
+**Example with script file:**
+```yaml
+Input:
+  UNINSTALL_SCRIPT: uninstall-elgato-stream-deck.sh
+```
+
+**Example with inline script (simple case):**
+```yaml
+Input:
+  POST_INSTALL_SCRIPT: |
+    #!/bin/bash
+    echo "Installation complete"
+```
+
 ### YAML Formatting
 
 - Use 2-space indentation
@@ -231,6 +265,36 @@ python3 -m flake8 FleetImporter/FleetImporter.py
 2. **Validate YAML**: Ensure all recipe files are valid YAML
 3. **Run code checks**: For processor changes, pass all style checks
 4. **Update documentation**: Add or update README sections as needed
+
+### Using Pre-Commit Hooks
+
+This repository includes pre-commit hooks that automatically validate AutoPkg recipes before commits. Using pre-commit is optional but highly recommended to catch issues early.
+
+For details on using pre-commit with AutoPkg, see [Using pre-commit to validate AutoPkg recipes](https://www.elliotjordan.com/posts/pre-commit-02-autopkg/).
+
+To enable pre-commit:
+
+1. **Install pre-commit** (if not already installed):
+   ```bash
+   brew install pre-commit
+   ```
+
+2. **Activate the hooks** in your cloned repository:
+   ```bash
+   cd /path/to/fleet-recipes
+   pre-commit install
+   ```
+
+Once installed, the hooks will automatically run when you attempt to commit changes. You can also manually run the checks on all files:
+
+```bash
+pre-commit run --all-files
+```
+
+The pre-commit configuration checks for:
+- Valid AutoPkg recipe format and structure
+- Prevention of AutoPkg overrides (`.recipe` files in recipe repos)
+- Prevention of AutoPkg trust info files
 
 ### Pull Request Process
 
