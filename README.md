@@ -174,16 +174,32 @@ autopkg run SoftwareName.fleet.recipe.yaml
 
 When `AUTO_UPDATE_ENABLED` is set to `true`, FleetImporter:
 
-1. **Builds version query**: Creates an osquery SQL query that detects hosts running outdated versions:
-   ```sql
-   SELECT 1 WHERE EXISTS (
-     SELECT 1 FROM apps WHERE bundle_identifier = '<YOUR_APP_BUNDLE_ID>' AND version_compare(bundle_short_version, '<REQUIRED_VERSION>') != 0
-   );
+1. **Builds version query**: Creates an osquery SQL query to detect outdated versions using one of two modes:
+
+   **Automatic Bundle ID Mode** (Recommended):
+   If no custom query is provided, the processor automatically:
+   - Extracts the bundle identifier from the `.pkg` file
+   - Generates a default query using the `apps` table and `version_compare()`
+   - Works for most standard macOS applications
+   - Requires no manual configuration
+
+   **Custom Query Mode** (Advanced use cases):
+   Define `AUTO_UPDATE_POLICY_QUERY` in your recipe with a `%VERSION%` placeholder:
+   ```yaml
+   AUTO_UPDATE_POLICY_QUERY: |
+     SELECT 1 WHERE EXISTS (
+       SELECT 1 FROM apps WHERE bundle_identifier = 'com.github.GitHubClient' AND version_compare(bundle_short_version, '%VERSION%') < 0
+     );
    ```
+   The `%VERSION%` placeholder is replaced with the actual version at runtime. Use custom queries for:
+   - Non-standard bundle ID detection
+   - Windows registry-based detection
+   - Linux package managers
+   - Custom osquery tables or complex version logic
 
 2. **Creates policy** (Direct mode): Uses Fleet API to create or update a policy with:
    - Descriptive name (e.g., `autopkg-auto-update-github-desktop`)
-   - Version detection query
+   - Version detection query (custom or auto-generated)
    - Link to install package automatically on policy failure
    - Platform targeting (macOS only)
 
@@ -196,6 +212,7 @@ Policy names are generated from the `AUTO_UPDATE_POLICY_NAME` template:
 - **Default template**: `autopkg-auto-update-%NAME%`
 - **%NAME% placeholder**: Replaced with slugified software title
 - **Slugification**: Converts to lowercase, removes special characters, replaces spaces with hyphens
+- **Customization**: Override `AUTO_UPDATE_POLICY_NAME` in your recipe to use a different naming pattern
 
 Examples:
 - `GitHub Desktop` → `autopkg-auto-update-github-desktop`
@@ -212,7 +229,10 @@ All bundle identifiers and versions are automatically escaped to prevent SQL inj
 
 ### Important considerations
 
-1. **Bundle ID extraction**: The processor automatically extracts the CFBundleIdentifier from the .app bundle within the package. If extraction fails, policy creation is skipped with a warning.
+1. **Query modes**: 
+   - **Custom queries** (via `AUTO_UPDATE_POLICY_QUERY`) give full control and support any osquery table
+   - **Automatic mode** extracts CFBundleIdentifier from `.pkg` files and works for standard macOS apps
+   - If automatic extraction fails and no custom query is provided, policy creation is skipped with a warning
 
 2. **Version comparison**: Uses osquery's `version_compare()` function for semantic version comparison. Policies fail when hosts have versions less than the required version (`version_compare(bundle_short_version, 'X.Y.Z') < 0`).
 
